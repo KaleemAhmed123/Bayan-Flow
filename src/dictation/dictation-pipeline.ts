@@ -1,9 +1,10 @@
 import type { CleanupOptions } from "../cleanup/cleanup-provider.js";
 import { normalizeError, type NormalizedError } from "../observability/errors.js";
 import type { DictationResult, OperationContext } from "../types.js";
+import type { GroqTranscriptionOptions, GroqTranscriptionResult } from "../transcription/groq-transcription-service.js";
 
 export type TranscriptionLike = {
-  transcribe(audioPath: string, context?: OperationContext): Promise<string>;
+  transcribe(audioPath: string, context?: OperationContext, options?: GroqTranscriptionOptions): Promise<GroqTranscriptionResult>;
 };
 
 export type CleanupLike = {
@@ -27,19 +28,23 @@ export async function runDictationPipelineWithProviders(options: {
   const rawText = await options.transcription.transcribe(options.audioPath, {
     ...options.context,
     requestId: options.transcriptionRequestId,
+  }, {
+    language: "en",
   });
+
+  const rawTextValue = rawText.text;
 
   if (!options.cleanupEnabled || !options.cleanup) {
     return {
       status: "success",
       cleanupFallback: false,
-      result: { rawText, finalText: rawText, cleanupFallback: false },
+      result: { rawText: rawTextValue, finalText: rawTextValue, cleanupFallback: false },
     };
   }
 
   try {
     const finalText = await options.cleanup.clean(
-      rawText,
+      rawTextValue,
       { mode: "default" },
       {
         ...options.context,
@@ -50,18 +55,18 @@ export async function runDictationPipelineWithProviders(options: {
     return {
       status: "success",
       cleanupFallback: false,
-      result: { rawText, finalText, cleanupFallback: false },
+      result: { rawText: rawTextValue, finalText, cleanupFallback: false },
     };
   } catch (error) {
     const normalized = normalizeError("cleanup", error);
-    await options.onCleanupFallback?.(normalized, rawText);
+    await options.onCleanupFallback?.(normalized, rawTextValue);
     return {
       status: "cleanup_fallback",
       cleanupFallback: true,
       error: normalized,
       result: {
-        rawText,
-        finalText: rawText,
+        rawText: rawTextValue,
+        finalText: rawTextValue,
         cleanupFallback: true,
       },
     };

@@ -38,12 +38,13 @@ export class GroqCleanupProvider implements CleanupProvider {
         () =>
           this.client.chat.completions.create({
             model: this.model,
-            temperature: 0.1,
-            max_completion_tokens: 700,
+            temperature: 0,
+            max_completion_tokens: 400,
             messages: [
               {
                 role: "system",
-                content: "You clean dictated text for insertion into desktop apps. Return only cleaned text.",
+                content:
+                  "You are a constrained transcript cleanup engine. Fix punctuation, spacing, capitalization, and obvious ASR artifacts while preserving meaning. Do not summarize, explain, answer, expand, or invent. Preserve commands, code-like tokens, filenames, URLs, and product names. Return only cleaned text.",
               },
               {
                 role: "user",

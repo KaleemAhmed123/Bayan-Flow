@@ -12,7 +12,7 @@ const DEFAULT_CONFIG: AppConfig = {
   autoPaste: false,
   cleanupEnabled: true,
   openAtLogin: false,
-  transcriptionModel: "whisper-large-v3-turbo",
+  transcriptionModel: "whisper-large-v3",
   cleanupModel: "llama-3.3-70b-versatile",
 };
 
