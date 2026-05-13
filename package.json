@@ -33,6 +33,11 @@
     "appId": "com.bayanflow.app",
     "productName": "BayanFlow",
     "asar": true,
+    "afterPack": "scripts/after-pack.cjs",
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US"
+    ],
     "npmRebuild": false,
     "buildDependenciesFromSource": false,
     "files": [
@@ -45,12 +50,8 @@
       "!**/node_modules/@nut-tree-fork/libnut-linux/**"
     ],
     "asarUnpack": [
-      "**/*.node",
-      "**/prebuilds/**",
-      "**/build/Release/**",
-      "**/node_modules/uiohook-napi/**",
-      "**/node_modules/@nut-tree-fork/libnut/**",
-      "**/node_modules/@nut-tree-fork/libnut-win32/**"
+      "**/node_modules/uiohook-napi/prebuilds/win32-x64/*.node",
+      "**/node_modules/@nut-tree-fork/libnut-win32/build/Release/**"
     ],
     "directories": {
       "output": "release"
@@ -70,6 +71,12 @@
       "signAndEditExecutable": false
     },
     "nsis": {
+      "installerIcon": "src/assets/tray-icon.ico",
+      "uninstallerIcon": "src/assets/tray-icon.ico",
+      "installerHeaderIcon": "build/installerHeaderIcon.ico",
+      "installerHeader": "build/installerHeader.bmp",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerSidebar": "build/uninstallerSidebar.bmp",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,
