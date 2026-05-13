@@ -1,0 +1,141 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, Segoe UI, Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f4f6f8;
+  color: #171a1f;
+}
+
+main {
+  padding: 22px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.subtitle {
+  margin: 5px 0 18px;
+  color: #647084;
+  font-size: 13px;
+}
+
+label {
+  display: block;
+  margin: 14px 0 6px;
+  color: #3f4854;
+  font-size: 13px;
+}
+
+input[type="password"],
+input[type="text"] {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #c5ced9;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 10px 11px;
+  font-size: 14px;
+}
+
+input[type="password"]:focus,
+input[type="text"]:focus {
+  border-color: #176bff;
+  box-shadow: 0 0 0 3px rgba(23, 107, 255, 0.12);
+  outline: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+.row.compact {
+  margin-top: 10px;
+  color: #533b08;
+}
+
+.panel {
+  border: 1px solid #dde3eb;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.panel + .panel {
+  margin-top: 12px;
+}
+
+.warning {
+  margin-top: 10px;
+  border: 1px solid #f4c763;
+  border-radius: 6px;
+  background: #fff7df;
+  color: #533b08;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 10px;
+}
+
+button {
+  margin-top: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: #176bff;
+  color: white;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 14px;
+}
+
+button:hover {
+  background: #0f5ee6;
+}
+
+button.secondary {
+  margin-top: 10px;
+  border: 1px solid #c5ced9;
+  background: #ffffff;
+  color: #171a1f;
+}
+
+button.secondary:hover {
+  background: #eef2f7;
+}
+
+.status {
+  margin-left: 10px;
+  color: #477055;
+  font-size: 13px;
+}
+
+.health {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #3f4854;
+  font-size: 13px;
+}
+
+.health li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.health strong {
+  color: #171a1f;
+  font-weight: 600;
+}
