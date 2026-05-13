@@ -22,6 +22,7 @@ export class StatusOverlay {
       skipTaskbar: true,
       transparent: true,
       focusable: false,
+      icon: path.join(__dirname, "assets", "tray-icon.ico"),
       webPreferences: {
         preload: path.join(__dirname, "renderer", "status-preload.js"),
         contextIsolation: true,
@@ -55,6 +56,7 @@ export class StatusOverlay {
     this.window.webContents.send("status:update", message);
     void logger.debug("status.show", { status: message.status, messageChars: message.message.length });
 
+    this.resizeForMessage(message);
     this.window.showInactive();
 
     if (this.hideTimer) {
@@ -62,7 +64,7 @@ export class StatusOverlay {
     }
 
     if (message.status === "idle" || message.status === "error") {
-      this.hideTimer = setTimeout(() => this.window?.hide(), message.status === "error" ? 2500 : 900);
+      this.hideTimer = setTimeout(() => this.window?.hide(), message.status === "error" ? 5000 : 1200);
     }
   }
 
@@ -104,6 +106,27 @@ export class StatusOverlay {
     if (senderId !== this.window?.webContents.id) {
       throw new Error("Invalid status IPC sender.");
     }
+  }
+
+  private resizeForMessage(message: StatusMessage): void {
+    if (!this.window) {
+      return;
+    }
+
+    if (message.status === "error") {
+      const width = 520;
+      const estimatedLines = Math.max(2, Math.ceil(message.message.length / 52));
+      const height = Math.min(220, 72 + estimatedLines * 22);
+      this.window.setSize(width, height, false);
+      return;
+    }
+
+    if (message.status === "confirm") {
+      this.window.setSize(304, 80, false);
+      return;
+    }
+
+    this.window.setSize(message.message.length > 34 ? 392 : 280, 72, false);
   }
 }
 
