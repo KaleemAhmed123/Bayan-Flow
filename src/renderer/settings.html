@@ -10,59 +10,128 @@
     <link rel="stylesheet" href="./settings.css" />
   </head>
   <body>
-    <main>
-      <h1>BayanFlow Settings</h1>
-      <p class="subtitle">Configure dictation, cleanup, and insertion behavior.</p>
+    <main class="shell">
+      <header class="hero">
+        <div class="brand">
+          <img class="brand-mark" src="../assets/tray-icon.ico" alt="BayanFlow icon" />
+          <div class="brand-copy">
+            <p class="eyebrow">Windows Dictation Control</p>
+            <h1>BayanFlow</h1>
+            <p class="subtitle">Configure startup, dictation, cleanup, and insertion behavior from one place.</p>
+          </div>
+        </div>
+        <button class="secondary hero-button" id="testMic" type="button">Test microphone</button>
+      </header>
 
-      <section class="panel">
-        <ul class="health" id="health"></ul>
+      <section class="setup-callout" id="setupNotice" hidden>
+        Add your Groq API key, confirm the hotkey, then save. BayanFlow stays in copy-only mode until you explicitly enable auto-paste.
       </section>
 
-      <section class="panel">
-        <label for="groqApiKey">Groq API key</label>
-        <input id="groqApiKey" type="password" autocomplete="off" />
+      <section class="content-grid">
+        <div class="stack">
+          <section class="surface">
+            <div class="section-head">
+              <div>
+                <h2>Access</h2>
+                <p>Secure your API key and choose the recording shortcut.</p>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label class="field field-span" for="groqApiKey">
+                <span class="field-label">Groq API key</span>
+                <input id="groqApiKey" type="password" autocomplete="off" />
+              </label>
 
-        <label for="hotkey">Activation hotkey</label>
-        <input id="hotkey" type="text" />
+              <label class="field field-span" for="hotkey">
+                <span class="field-label">Activation hotkey</span>
+                <input id="hotkey" type="text" />
+              </label>
+            </div>
+          </section>
 
-        <button class="secondary" id="testMic" type="button">Test microphone</button>
-      </section>
+          <section class="surface">
+            <div class="section-head">
+              <div>
+                <h2>Models</h2>
+                <p>Set the transcription and cleanup models used by BayanFlow.</p>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label class="field" for="transcriptionModel">
+                <span class="field-label">Transcription model</span>
+                <input id="transcriptionModel" type="text" />
+                <span class="field-help">Default accuracy model: whisper-large-v3</span>
+              </label>
 
-      <section class="panel">
-        <label for="transcriptionModel">Transcription model</label>
-        <input id="transcriptionModel" type="text" />
+              <label class="field" for="cleanupModel">
+                <span class="field-label">Cleanup model</span>
+                <input id="cleanupModel" type="text" />
+              </label>
+            </div>
+          </section>
 
-        <label for="cleanupModel">Cleanup model</label>
-        <input id="cleanupModel" type="text" />
-      </section>
+          <section class="surface">
+            <div class="section-head">
+              <div>
+                <h2>Behavior</h2>
+                <p>Choose insertion and startup defaults for this machine.</p>
+              </div>
+            </div>
 
-      <section class="panel">
-        <label class="row">
-          <input id="autoPaste" type="checkbox" />
-          Paste automatically after recording stops
-        </label>
-        <div class="warning" id="autoPasteWarning" hidden>
-          Auto-paste sends text to the active window after recording. BayanFlow verifies the original window handle when available and falls back to title matching; if the target changes, the text stays copied instead.
-          <label class="row compact">
-            <input id="autoPasteConfirmed" type="checkbox" />
-            I understand auto-paste may paste into the wrong app if Windows cannot verify the target.
-          </label>
+            <div class="option-list">
+              <label class="toggle">
+                <input id="autoPaste" type="checkbox" />
+                <span>
+                  <span class="toggle-title">Paste automatically after recording stops</span>
+                  <span class="toggle-copy">Copy-only remains the safer default. Enable this only when you want BayanFlow to paste into the original app window.</span>
+                </span>
+              </label>
+
+              <div class="warning" id="autoPasteWarning" hidden>
+                Auto-paste sends text to the active window after recording. BayanFlow verifies the original window handle when available and falls back to title matching; if the target changes, the text stays copied instead.
+                <label class="toggle compact">
+                  <input id="autoPasteConfirmed" type="checkbox" />
+                  <span>
+                    <span class="toggle-title">I understand the risk</span>
+                    <span class="toggle-copy">If Windows cannot verify the original target, auto-paste may still point at the wrong app.</span>
+                  </span>
+                </label>
+              </div>
+
+              <label class="toggle">
+                <input id="cleanupEnabled" type="checkbox" />
+                <span>
+                  <span class="toggle-title">Clean transcript with AI before inserting</span>
+                  <span class="toggle-copy">Use the cleanup model to normalize punctuation and formatting before text is copied or pasted.</span>
+                </span>
+              </label>
+
+              <label class="toggle">
+                <input id="openAtLogin" type="checkbox" />
+                <span>
+                  <span class="toggle-title">Start BayanFlow when I sign in</span>
+                  <span class="toggle-copy">Keep the tray app available as soon as your Windows session starts.</span>
+                </span>
+              </label>
+            </div>
+          </section>
         </div>
 
-        <label class="row">
-          <input id="cleanupEnabled" type="checkbox" />
-          Clean transcript with AI before inserting
-        </label>
-
-        <label class="row">
-          <input id="openAtLogin" type="checkbox" />
-          Start BayanFlow when I sign in
-        </label>
-
+        <aside class="surface rail">
+          <div class="section-head">
+            <div>
+              <h2>Readiness</h2>
+              <p>Current local state for this installation.</p>
+            </div>
+          </div>
+          <ul class="health" id="health"></ul>
+        </aside>
       </section>
 
-      <button id="save">Save</button>
-      <span class="status" id="status"></span>
+      <footer class="footer">
+        <span class="status" id="status" aria-live="polite"></span>
+        <button id="save" type="button">Save settings</button>
+      </footer>
     </main>
     <script src="./settings.js"></script>
   </body>
