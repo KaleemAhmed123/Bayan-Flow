@@ -68,10 +68,14 @@ export class SettingsWindow {
     });
 
     this.window = new BrowserWindow({
-      width: 460,
-      height: 650,
-      resizable: false,
+      width: 920,
+      height: 760,
+      minWidth: 820,
+      minHeight: 700,
+      resizable: true,
       title: "BayanFlow Settings",
+      icon: path.join(__dirname, "assets", "tray-icon.ico"),
+      backgroundColor: "#eef2f6",
       webPreferences: {
         preload: path.join(__dirname, "renderer", "settings-preload.js"),
         contextIsolation: true,

@@ -55,6 +55,7 @@ export class AudioRecorder {
       width: 320,
       height: 160,
       show: false,
+      icon: path.join(rendererDir, "..", "assets", "tray-icon.ico"),
       webPreferences: {
         preload: path.join(rendererDir, "recorder-preload.js"),
         contextIsolation: true,

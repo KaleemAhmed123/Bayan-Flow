@@ -35,6 +35,8 @@ let hotkeyAvailable = false;
 let lastErrorId = "";
 let lastMicError = "";
 let logDir = "";
+let settingsWindowRef: SettingsWindow | null = null;
+let pendingSecondInstanceNotice = false;
 
 const configStore = new ConfigStore();
 const recorder = new AudioRecorder();
@@ -42,6 +44,9 @@ const inserter = new TextInserter();
 const statusOverlay = new StatusOverlay();
 
 app.setName("BayanFlow");
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.bayanflow.app");
+}
 try {
   app.setPath("userData", process.env.BAYANFLOW_USER_DATA_DIR || path.join(app.getPath("appData"), "BayanFlow"));
 } catch {
@@ -53,6 +58,10 @@ if (!app.requestSingleInstanceLock()) {
   writeEarlyStartupDiagnostic("single_instance.lock_failed");
   app.quit();
 }
+
+app.on("second-instance", () => {
+  void showAlreadyRunningNotice();
+});
 
 try {
   crashReporter.start({
@@ -125,10 +134,15 @@ app.whenReady()
         }
       },
     );
+    settingsWindowRef = settingsWindow;
 
     restartHotkeyListener();
     createTray(settingsWindow);
-    showStatus("idle", `Ready: ${config.hotkey}`);
+    await showLaunchReadyNotice(settingsWindow);
+    if (pendingSecondInstanceNotice) {
+      pendingSecondInstanceNotice = false;
+      await showAlreadyRunningNotice();
+    }
     void logger.info("app.startup.success", { hotkey: config.hotkey, logDir });
   })
   .catch((error) => {
@@ -156,7 +170,8 @@ process.on("uncaughtException", (error) => {
 function createTray(settingsWindow: SettingsWindow): void {
   tray?.destroy();
   tray = new Tray(createTrayIcon());
-  tray.setToolTip("BayanFlow");
+  tray.setToolTip(createTrayTooltip());
+  tray.on("click", () => void settingsWindow.show());
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: `Hotkey: ${config.hotkey}`, enabled: false },
@@ -175,6 +190,52 @@ function createTray(settingsWindow: SettingsWindow): void {
       { label: "Quit", click: () => app.quit() },
     ]),
   );
+}
+
+async function showLaunchReadyNotice(settingsWindow: SettingsWindow): Promise<void> {
+  if (!config.groqApiKey) {
+    showStatus("error", "Add your Groq API key");
+    showTrayBalloon("BayanFlow setup needed", "Add your Groq API key to start dictating.");
+    await settingsWindow.show();
+    void logger.info("app.launch_notice.settings_opened", { reason: "missing_groq_api_key" });
+    return;
+  }
+
+  const message = `BayanFlow running: ${config.hotkey}`;
+  showStatus("idle", message);
+  showTrayBalloon("BayanFlow is running", `Use ${config.hotkey} to dictate. Left-click the tray icon for Settings.`);
+  void logger.info("app.launch_notice.ready", { hotkey: config.hotkey });
+}
+
+async function showAlreadyRunningNotice(): Promise<void> {
+  const settingsWindow = settingsWindowRef;
+  if (!settingsWindow) {
+    pendingSecondInstanceNotice = true;
+    writeEarlyStartupDiagnostic("single_instance.second_instance_pending");
+    return;
+  }
+
+  await settingsWindow.show();
+  showStatus("idle", "BayanFlow is already running");
+  showTrayBalloon("BayanFlow is already running", "Settings opened in the existing app.");
+  void logger.info("app.second_instance.notice_shown");
+}
+
+function showTrayBalloon(title: string, content: string): void {
+  try {
+    tray?.displayBalloon({
+      title,
+      content,
+      icon: createTrayIcon(),
+    });
+  } catch (error) {
+    void logger.debug("tray.balloon.skipped", { error: normalizeError("startup", error) });
+  }
+}
+
+function createTrayTooltip(): string {
+  const hotkey = config?.hotkey || "not configured";
+  return `BayanFlow\nRunning in tray\nHotkey: ${hotkey}`;
 }
 
 function restartHotkeyListener(): void {
