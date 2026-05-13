@@ -1,0 +1,126 @@
+npm run build
+
+> bayanflow@0.1.0 build
+> tsc -p tsconfig.json && node scripts/copy-renderer.mjs
+
+PS C:\Users\shaam\Desktop\whispr-clone> npm test
+
+> bayanflow@0.1.0 test
+> node --test tests/*.test.mjs
+
+✔ cleanup prompt keeps provider output constrained (2.2543ms)
+✔ hotkey parser separates modifiers and primary key (2.7804ms)
+✔ normalizes renderer-provided config before use (1.6092ms)
+✔ dictation pipeline returns cleaned text when cleanup succeeds (1.7463ms)
+✔ dictation pipeline treats cleanup failure as raw transcript fallback (1.4283ms)
+✔ dictation pipeline lets transcription failure fail hard (1.0602ms)
+✔ hotkey listener starts, fires once while pressed, and stops (7.2212ms)
+✔ hotkey listener does not fire without required modifiers (0.5038ms)
+✔ logger redacts sensitive fields and writes json lines (14.5009ms)
+✔ logger rotates when the active log exceeds max bytes (8.5238ms)
+✔ sanitize redacts likely secrets in nested data (2.0613ms)
+✔ normalizes retryable and non-retryable errors (1.0441ms)
+✔ normalizes specific Groq user-facing errors (1.017ms)
+✔ config store falls back to defaults on invalid json (11.9372ms)
+✔ groq cleanup logs token usage without content (3.1013ms)
+✔ recorder IPC validation rejects invalid session id (2.9487ms)
+✔ recorder IPC validation rejects non-ArrayBuffer audio (1.2407ms)
+✔ recorder IPC validation rejects oversized audio (0.4284ms)
+✔ recorder microphone test validation requires active request id (3.0629ms)
+✔ recorder session accepts start and stop for active session (2.2798ms)
+✔ recorder session rejects stale events (0.5153ms)
+✔ recorder session propagates start and stop failures (2.7605ms)
+✔ recorder.html uses external renderer assets and strict CSP (8.7541ms)
+✔ settings.html uses external renderer assets and strict CSP (2.1614ms)
+✔ status.html uses external renderer assets and strict CSP (2.1587ms)
+✔ config store loads old plaintext key and saves encrypted key (15.8262ms)
+✔ config store loads encrypted key (5.4053ms)
+✔ config store does not overwrite file when encryption is unavailable (4.0307ms)
+✔ config store falls back to plaintext key when encrypted blob is invalid (4.2459ms)
+✔ copyText writes text without paste automation (2.505ms)
+✔ pasteText restores previous clipboard after successful paste (194.0622ms)
+✔ pasteText does not restore when clipboard changed after paste (198.6712ms)
+✔ pasteText leaves final text copied when paste fails (51.0907ms)
+✔ pasteText leaves final text copied when active target changes (0.7654ms)
+✔ pasteText rejects when active window handle changes even if title is unchanged (0.4109ms)
+ℹ tests 35
+ℹ suites 0
+ℹ pass 35
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1502.5761
+PS C:\Users\shaam\Desktop\whispr-clone> npm audit --omit=dev
+# npm audit report
+
+file-type  13.0.0 - 21.3.0
+Severity: moderate
+file-type affected by infinite loop in ASF parser on malformed input with zero-size sub-header - https://github.com/advisories/GHSA-5v7r-6r5c-r473
+No fix available
+node_modules/file-type
+  @jimp/core  0.16.3-canary.993.1592.0 - 1.6.0
+  Depends on vulnerable versions of file-type
+  node_modules/@jimp/core
+    @jimp/custom  >=0.16.3-canary.993.1592.0
+    Depends on vulnerable versions of @jimp/core
+    node_modules/@jimp/custom
+      jimp  0.16.3-canary.993.1592.0 - 0.22.12
+      Depends on vulnerable versions of @jimp/custom
+      node_modules/jimp
+        @nut-tree-fork/nut-js  *
+        Depends on vulnerable versions of @nut-tree-fork/provider-interfaces
+        Depends on vulnerable versions of @nut-tree-fork/shared
+        Depends on vulnerable versions of jimp
+        node_modules/@nut-tree-fork/nut-js
+        @nut-tree-fork/shared  *
+        Depends on vulnerable versions of jimp
+        node_modules/@nut-tree-fork/shared
+          @nut-tree-fork/provider-interfaces  *
+          Depends on vulnerable versions of @nut-tree-fork/shared
+          node_modules/@nut-tree-fork/provider-interfaces
+
+7 moderate severity vulnerabilities
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+Some issues need review, and may require choosing
+a different dependency.
+PS C:\Users\shaam\Desktop\whispr-clone> npm run local:smoke
+
+> bayanflow@0.1.0 local:smoke
+> npm run build && node scripts/smoke-local.mjs
+
+
+> bayanflow@0.1.0 build
+> tsc -p tsconfig.json && node scripts/copy-renderer.mjs
+
+
+(node:1672) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `electron --trace-deprecation ...` to show where the warning was created)
+Local smoke passed: Electron stayed alive for 8 seconds.
+PS C:\Users\shaam\Desktop\whispr-clone> npm run pack
+
+> bayanflow@0.1.0 pack
+> npm run build && electron-builder --dir
+
+
+> bayanflow@0.1.0 build
+> tsc -p tsconfig.json && node scripts/copy-renderer.mjs
+
+  • electron-builder  version=26.8.1 os=10.0.26200
+  • loaded configuration  file=package.json ("build" field)
+  • writing effective config  file=release\builder-effective-config.yaml
+  • skipped dependencies rebuild  reason=npmRebuild is set to false
+  • packaging       platform=win32 arch=x64 electron=42.0.1 appOutDir=release\win-unpacked
+  • searching for node modules  pm=npm searchDir=C:\Users\shaam\Desktop\whispr-clone
+  • duplicate dependency references  dependencies=["once@1.4.0","bindings@1.5.0","bindings@1.5.0","@nut-tree-fork/shared@4.2.6","jimp@0.22.10","abort-controller@3.0.0","node-fetch@2.7.0","@jimp/custom@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/plugin-blit@0.22.12","@jimp/plugin-resize@0.22.12","@jimp/plugin-scale@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/plugin-crop@0.22.12","@jimp/plugin-resize@0.22.12","@jimp/plugin-scale@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/plugin-rotate@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/plugin-blit@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/plugin-blit@0.22.12","@jimp/plugin-crop@0.22.12","@jimp/plugin-resize@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/plugin-resize@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/plugin-blur@0.22.12","@jimp/plugin-resize@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/plugin-color@0.22.12","@jimp/plugin-resize@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","@jimp/utils@0.22.12","@jimp/custom@0.22.12","call-bind-apply-helpers@1.0.2","es-object-atoms@1.1.1","hasown@2.0.3","hasown@2.0.3"]
+  • updating asar integrity executable resource  executablePath=release\win-unpacked\BayanFlow.exe
+PS C:\Users\shaam\Desktop\whispr-clone> npm run packaged:smoke
+
+> bayanflow@0.1.0 packaged:smoke
+> node scripts/smoke-packaged.mjs
+
+Packaged smoke passed: startup success log found.
+PS C:\Users\shaam\Desktop\whispr-clone> 
