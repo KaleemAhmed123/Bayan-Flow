@@ -1,0 +1,84 @@
+{
+  "name": "bayanflow",
+  "version": "0.1.0",
+  "description": "Windows-first AI dictation MVP with Groq transcription and cleanup.",
+  "author": "BayanFlow",
+  "main": "dist/main.cjs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-renderer.mjs",
+    "dev": "npm run build && node scripts/start-electron.mjs",
+    "start": "node scripts/start-electron.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "ci": "npm run build && npm test",
+    "audit:prod": "npm audit --omit=dev",
+    "local:smoke": "npm run build && node scripts/smoke-local.mjs",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "packaged:smoke": "node scripts/smoke-packaged.mjs"
+  },
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "groq-sdk": "^0.15.0",
+    "uiohook-napi": "^1.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "electron": "^42.0.1",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.8.2"
+  },
+  "build": {
+    "appId": "com.bayanflow.app",
+    "productName": "BayanFlow",
+    "asar": true,
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!**/node_modules/uiohook-napi/prebuilds/darwin-*/**",
+      "!**/node_modules/uiohook-napi/prebuilds/linux-*/**",
+      "!**/node_modules/uiohook-napi/prebuilds/win32-arm64/**",
+      "!**/node_modules/@nut-tree-fork/libnut-darwin/**",
+      "!**/node_modules/@nut-tree-fork/libnut-linux/**"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "**/prebuilds/**",
+      "**/build/Release/**",
+      "**/node_modules/uiohook-napi/**",
+      "**/node_modules/@nut-tree-fork/libnut/**",
+      "**/node_modules/@nut-tree-fork/libnut-win32/**"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "src/assets/tray-icon.ico",
+      "legalTrademarks": "BayanFlow",
+      "executableName": "BayanFlow",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "BayanFlow"
+    },
+    "publish": null
+  }
+}
