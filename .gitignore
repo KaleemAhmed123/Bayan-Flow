@@ -1,0 +1,17 @@
+node_modules/
+dist/
+release/
+asar-check/
+
+*.log
+.env
+recordings/
+/notes
+
+coverage/
+.nyc_output/
+*.tmp
+*.zip
+
+release/
+asar-check/
