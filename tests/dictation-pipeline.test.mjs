@@ -9,7 +9,7 @@ test("dictation pipeline returns cleaned text when cleanup succeeds", async () =
     cleanupEnabled: true,
     transcriptionRequestId: "t1",
     cleanupRequestId: "c1",
-    transcription: { transcribe: async () => "raw words" },
+    transcription: { transcribe: async () => ({ text: "raw words", language: "en", segments: [], confidence: { weakSegmentCount: 0, averageLogprob: null, highNoSpeechSegmentCount: 0, bucket: "strong", retried: false } }) },
     cleanup: { clean: async () => "clean words" },
   });
 
@@ -26,7 +26,7 @@ test("dictation pipeline treats cleanup failure as raw transcript fallback", asy
     cleanupEnabled: true,
     transcriptionRequestId: "t1",
     cleanupRequestId: "c1",
-    transcription: { transcribe: async () => "raw words" },
+    transcription: { transcribe: async () => ({ text: "raw words", language: "en", segments: [], confidence: { weakSegmentCount: 0, averageLogprob: null, highNoSpeechSegmentCount: 0, bucket: "strong", retried: false } }) },
     cleanup: { clean: async () => { throw Object.assign(new Error("bad model"), { status: 404 }); } },
     onCleanupFallback: (error) => {
       fallbackError = error;
@@ -53,4 +53,35 @@ test("dictation pipeline lets transcription failure fail hard", async () => {
       }),
     /network down/,
   );
+});
+
+test("dictation pipeline requests english transcription options", async () => {
+  let capturedOptions;
+  const output = await runDictationPipelineWithProviders({
+    audioPath: "audio.webm",
+    context: { sessionId: "s1" },
+    cleanupEnabled: false,
+    transcriptionRequestId: "t1",
+    cleanupRequestId: "c1",
+    transcription: {
+      transcribe: async (_audioPath, _context, options) => {
+        capturedOptions = options;
+        return {
+          text: "raw words",
+          language: "en",
+          segments: [],
+          confidence: {
+            weakSegmentCount: 0,
+            averageLogprob: null,
+            highNoSpeechSegmentCount: 0,
+            bucket: "strong",
+            retried: false,
+          },
+        };
+      },
+    },
+  });
+
+  assert.equal(output.result.finalText, "raw words");
+  assert.deepEqual(capturedOptions, { language: "en" });
 });

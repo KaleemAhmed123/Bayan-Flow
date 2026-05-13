@@ -59,7 +59,7 @@ test("config store does not overwrite file when encryption is unavailable", asyn
         autoPaste: true,
         cleanupEnabled: true,
         openAtLogin: false,
-        transcriptionModel: "whisper-large-v3-turbo",
+        transcriptionModel: "whisper-large-v3",
         cleanupModel: "llama-3.3-70b-versatile",
       }),
     /Secure credential storage/,

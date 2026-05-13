@@ -97,6 +97,8 @@ test("groq cleanup logs token usage without content", async () => {
   const output = await provider.clean("rough text", { mode: "default" }, { sessionId: "session-test" });
 
   assert.equal(output, "clean text");
+  const start = entries.find((entry) => entry.event === "groq.cleanup.start");
+  assert.equal(JSON.stringify(start).includes("rough text"), false);
   const success = entries.find((entry) => entry.event === "groq.cleanup.success");
   assert.equal(success.fields.usage.prompt_tokens, 11);
   assert.equal(success.fields.usage.completion_tokens, 3);

@@ -8,6 +8,7 @@ test("cleanup prompt keeps provider output constrained", () => {
 
   assert.match(prompt, /Preserve the user's intended meaning/);
   assert.match(prompt, /Return plain cleaned text only/);
+  assert.match(prompt, /Do not paraphrase unless required to repair obvious ASR corruption/);
   assert.match(prompt, /uh hey can you send that tomorrow/);
 });
 

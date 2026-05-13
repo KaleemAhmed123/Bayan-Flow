@@ -16,6 +16,6 @@ test("normalizes renderer-provided config before use", () => {
   assert.equal(config.hotkey, "Ctrl+Shift+Space");
   assert.equal(config.autoPaste, false);
   assert.equal(config.cleanupEnabled, false);
-  assert.equal(config.transcriptionModel, "whisper-large-v3-turbo");
+  assert.equal(config.transcriptionModel, "whisper-large-v3");
   assert.equal(config.cleanupModel, "llama-3.3-70b-versatile");
 });
