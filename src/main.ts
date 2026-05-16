@@ -15,6 +15,7 @@ import { normalizeError, type ErrorCategory } from "./observability/errors.js";
 import { sanitize } from "./observability/logger.js";
 import { SettingsWindow } from "./settings-window.js";
 import { StatusOverlay } from "./status-overlay.js";
+import { GroqTranscriptionService } from "./transcription/groq-transcription-service.js";
 import type { AppConfig, DictationResult, OperationContext } from "./types.js";
 import type { PasteTarget } from "./insertion/text-inserter.js";
 
@@ -37,8 +38,15 @@ let lastMicError = "";
 let logDir = "";
 let settingsWindowRef: SettingsWindow | null = null;
 let pendingSecondInstanceNotice = false;
+let configStore: ConfigStore;
+let providerCache: {
+  apiKey: string;
+  transcriptionModel: string;
+  cleanupModel: string;
+  transcription: GroqTranscriptionService;
+  cleanup: GroqCleanupProvider;
+} | null = null;
 
-const configStore = new ConfigStore();
 const recorder = new AudioRecorder();
 const inserter = new TextInserter();
 const statusOverlay = new StatusOverlay();
@@ -53,9 +61,10 @@ try {
   writeEarlyStartupDiagnostic("user_data_path.fallback");
   // Fall back to Electron's default userData path if appData is unavailable early in startup.
 }
+configStore = new ConfigStore();
 
 if (!app.requestSingleInstanceLock()) {
-  writeEarlyStartupDiagnostic("single_instance.lock_failed");
+  writeEarlyStartupDiagnostic("single_instance.already_running");
   app.quit();
 }
 
@@ -82,6 +91,7 @@ app.whenReady()
     await cleanupStaleTempAudio();
     config = await configStore.load();
     applyLoginItemSettings(config);
+    warmDictationProviders(config);
 
     recorder.setUnexpectedErrorHandler(async (error, context) => {
       if (!isRecording || context.sessionId !== activeSessionId) {
@@ -106,6 +116,7 @@ app.whenReady()
       async (nextConfig) => {
         config = nextConfig;
         applyLoginItemSettings(config);
+        warmDictationProviders(config);
         restartHotkeyListener();
         createTray(settingsWindow);
         showStatus("idle", "Settings saved");
@@ -122,14 +133,12 @@ app.whenReady()
         try {
           await recorder.testMicrophone();
           lastMicError = "";
-          showStatus("idle", "Microphone ready");
           void logger.info("recorder.mic_test.success");
         } catch (error) {
           const normalized = normalizeError("recorder", error);
           lastErrorId = normalized.id;
           lastMicError = normalized.userMessage;
           void logger.error("recorder.mic_test.failed", { error: normalized });
-          showStatus("error", formatUserError(normalized.userMessage, normalized.id));
           throw error;
         }
       },
@@ -354,14 +363,19 @@ async function stopRecording(): Promise<void> {
   isRecording = false;
   isProcessing = true;
   clearRecordingLimitTimer();
-  showStatus("processing", "Processing...");
+  showStatus("processing", "Preparing recording...");
 
   let audioPath: string | null = null;
   let failureCategory: ErrorCategory = "recorder";
   const context = currentContext();
+  const latencyStartedAt = Date.now();
+  let recorderStopMs = 0;
+  let pipelineMs = 0;
+  let insertionMs = 0;
 
   try {
     audioPath = await recorder.stop(context);
+    recorderStopMs = Date.now() - latencyStartedAt;
     if (!audioPath) {
       void logger.info("dictation.no_speech", context);
       showStatus("idle", "No speech captured");
@@ -370,7 +384,9 @@ async function stopRecording(): Promise<void> {
 
     failureCategory = "transcription";
     await assertAudioWithinLimits(audioPath);
+    const pipelineStartedAt = Date.now();
     const result = await runDictationPipeline(audioPath, context);
+    pipelineMs = Date.now() - pipelineStartedAt;
     if (!result.finalText) {
       void logger.info("dictation.no_text", context);
       showStatus("idle", "No text detected");
@@ -378,7 +394,9 @@ async function stopRecording(): Promise<void> {
     }
 
     failureCategory = "paste";
+    const insertionStartedAt = Date.now();
     await insertOrCopyText(result.finalText, context, Boolean(result.cleanupFallback));
+    insertionMs = Date.now() - insertionStartedAt;
     void logger.info("dictation.success", {
       ...context,
       autoPaste: config.autoPaste,
@@ -391,6 +409,15 @@ async function stopRecording(): Promise<void> {
     void logger.error("dictation.failed", { ...context, error: normalized });
     showStatus("error", formatUserError(normalized.userMessage, normalized.id));
   } finally {
+    void logger.info("dictation.latency", {
+      ...context,
+      recorderStopMs,
+      pipelineMs,
+      insertionMs,
+      totalMs: Date.now() - latencyStartedAt,
+      cleanupEnabled: config.cleanupEnabled,
+      autoPaste: config.autoPaste,
+    });
     isProcessing = false;
     if (audioPath) {
       await deleteTempAudio(audioPath, context);
@@ -430,17 +457,23 @@ async function toggleAutoPaste(settingsWindow: SettingsWindow): Promise<void> {
 }
 
 async function runDictationPipeline(audioPath: string, context: OperationContext): Promise<DictationResult> {
-  const { GroqTranscriptionService } = await import("./transcription/groq-transcription-service.js");
-  const transcription = new GroqTranscriptionService(config.groqApiKey, config.transcriptionModel);
-  const cleanupProvider = config.cleanupEnabled ? new GroqCleanupProvider(config.groqApiKey, config.cleanupModel) : undefined;
+  const providers = getDictationProviders(config);
   const pipeline = await runDictationPipelineWithProviders({
     audioPath,
     context,
     cleanupEnabled: config.cleanupEnabled,
     transcriptionRequestId: createId("transcription"),
     cleanupRequestId: createId("cleanup"),
-    transcription,
-    cleanup: cleanupProvider,
+    transcription: providers.transcription,
+    cleanup: config.cleanupEnabled ? providers.cleanup : undefined,
+    onStage: (stage) => {
+      if (stage === "transcribing") {
+        showStatus("processing", "Converting speech to text...");
+        return;
+      }
+
+      showStatus("processing", "Polishing transcript...");
+    },
     onCleanupFallback: (error, rawText) => {
       lastErrorId = error.id;
       void logger.error("dictation.cleanup.failed_raw_fallback", { ...context, error, rawChars: rawText.length });
@@ -452,6 +485,43 @@ async function runDictationPipeline(audioPath: string, context: OperationContext
   }
 
   return pipeline.result;
+}
+
+function warmDictationProviders(nextConfig: AppConfig): void {
+  if (!nextConfig.groqApiKey) {
+    providerCache = null;
+    return;
+  }
+
+  getDictationProviders(nextConfig);
+}
+
+function getDictationProviders(nextConfig: AppConfig): {
+  transcription: GroqTranscriptionService;
+  cleanup: GroqCleanupProvider;
+} {
+  if (
+    providerCache &&
+    providerCache.apiKey === nextConfig.groqApiKey &&
+    providerCache.transcriptionModel === nextConfig.transcriptionModel &&
+    providerCache.cleanupModel === nextConfig.cleanupModel
+  ) {
+    return providerCache;
+  }
+
+  providerCache = {
+    apiKey: nextConfig.groqApiKey,
+    transcriptionModel: nextConfig.transcriptionModel,
+    cleanupModel: nextConfig.cleanupModel,
+    transcription: new GroqTranscriptionService(nextConfig.groqApiKey, nextConfig.transcriptionModel),
+    cleanup: new GroqCleanupProvider(nextConfig.groqApiKey, nextConfig.cleanupModel),
+  };
+  void logger.info("dictation.providers.ready", {
+    transcriptionModel: nextConfig.transcriptionModel,
+    cleanupModel: nextConfig.cleanupModel,
+    cleanupEnabled: nextConfig.cleanupEnabled,
+  });
+  return providerCache;
 }
 
 function showStatus(status: "idle" | "listening" | "processing" | "confirm" | "pasting" | "error", message: string): void {

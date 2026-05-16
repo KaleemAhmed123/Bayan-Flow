@@ -45,27 +45,25 @@ test("config store loads encrypted key", async () => {
   assert.equal(loaded.groqApiKey, "gsk_secret");
 });
 
-test("config store does not overwrite file when encryption is unavailable", async () => {
+test("config store saves plaintext fallback when encryption is unavailable", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "bayan-config-"));
   const configPath = path.join(dir, "config.json");
   await writeFile(configPath, "original", "utf8");
 
   const store = new ConfigStore(configPath, fakeStorage({ available: false }));
-  await assert.rejects(
-    () =>
-      store.save({
-        groqApiKey: "gsk_secret",
-        hotkey: "Ctrl+Shift+Space",
-        autoPaste: true,
-        cleanupEnabled: true,
-        openAtLogin: false,
-        transcriptionModel: "whisper-large-v3",
-        cleanupModel: "llama-3.3-70b-versatile",
-      }),
-    /Secure credential storage/,
-  );
+  await store.save({
+    groqApiKey: "gsk_secret",
+    hotkey: "Ctrl+Shift+Space",
+    autoPaste: true,
+    cleanupEnabled: true,
+    openAtLogin: false,
+    transcriptionModel: "whisper-large-v3",
+    cleanupModel: "llama-3.3-70b-versatile",
+  });
 
-  assert.equal(await readFile(configPath, "utf8"), "original");
+  const saved = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(saved.groqApiKey, "gsk_secret");
+  assert.equal(saved.groqApiKeyEncrypted, "");
 });
 
 test("config store falls back to plaintext key when encrypted blob is invalid", async () => {
@@ -79,4 +77,23 @@ test("config store falls back to plaintext key when encrypted blob is invalid", 
 
   const loaded = await new ConfigStore(configPath, fakeStorage()).load();
   assert.equal(loaded.groqApiKey, "gsk_plain");
+});
+
+test("config store falls back to env key when encrypted blob is invalid and plaintext is empty", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "bayan-config-"));
+  const configPath = path.join(dir, "config.json");
+  await writeFile(configPath, JSON.stringify({ groqApiKeyEncrypted: "safeStorage:v1:YmFk", groqApiKey: "" }), "utf8");
+
+  const previous = process.env.GROQ_API_KEY;
+  process.env.GROQ_API_KEY = "gsk_env";
+  try {
+    const loaded = await new ConfigStore(configPath, fakeStorage()).load();
+    assert.equal(loaded.groqApiKey, "gsk_env");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.GROQ_API_KEY;
+    } else {
+      process.env.GROQ_API_KEY = previous;
+    }
+  }
 });

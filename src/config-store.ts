@@ -58,15 +58,17 @@ export class ConfigStore {
 
   async save(nextConfig: AppConfig): Promise<void> {
     const config = normalizeConfig(nextConfig);
+    const encryptedApiKey = encryptApiKey(config.groqApiKey, this.secureStorage);
     const storedConfig: StoredConfig = {
       ...config,
-      groqApiKey: "",
-      groqApiKeyEncrypted: encryptApiKey(config.groqApiKey, this.secureStorage),
+      groqApiKey: encryptedApiKey ? "" : config.groqApiKey,
+      groqApiKeyEncrypted: encryptedApiKey,
     };
     await mkdir(path.dirname(this.filePath), { recursive: true });
     await writeFile(this.filePath, `${JSON.stringify(storedConfig, null, 2)}\n`, "utf8");
     void logger.info("config.save.success", {
       hasGroqApiKey: Boolean(config.groqApiKey),
+      apiKeyStorage: encryptedApiKey ? "encrypted" : config.groqApiKey ? "plaintext_fallback" : "empty",
       hotkey: config.hotkey,
       autoPaste: config.autoPaste,
       cleanupEnabled: config.cleanupEnabled,
@@ -89,7 +91,8 @@ function readStoredApiKey(config: StoredConfig, secureStorage: SecureStorage | u
     }
   }
 
-  return typeof config.groqApiKey === "string" ? config.groqApiKey : process.env.GROQ_API_KEY || "";
+  const plaintextKey = typeof config.groqApiKey === "string" ? config.groqApiKey.trim() : "";
+  return plaintextKey || process.env.GROQ_API_KEY || "";
 }
 
 function encryptApiKey(apiKey: string, secureStorage: SecureStorage | undefined): string {
@@ -98,7 +101,7 @@ function encryptApiKey(apiKey: string, secureStorage: SecureStorage | undefined)
   }
 
   if (!secureStorage?.isEncryptionAvailable?.()) {
-    throw new Error("Secure credential storage is not available on this system.");
+    return "";
   }
 
   return `${ENCRYPTED_PREFIX}${secureStorage.encryptString(apiKey).toString("base64")}`;
