@@ -16,6 +16,33 @@ test("recorder session accepts start and stop for active session", async () => {
   assert.equal(session.snapshot().activeSessionId, null);
 });
 
+test("recorder session returns stop result that arrived before waitForStop", async () => {
+  const session = new RecorderSessionController();
+  session.begin("s1");
+
+  const started = session.waitForStart();
+  assert.equal(session.acceptStart("s1"), true);
+  await started;
+
+  assert.equal(session.acceptStop("s1", "auto-stopped.webm"), true);
+  assert.equal(session.snapshot().activeSessionId, "s1");
+  assert.equal(await session.waitForStop(), "auto-stopped.webm");
+  assert.equal(session.snapshot().activeSessionId, null);
+});
+
+test("recorder session returns stop failure that arrived before waitForStop", async () => {
+  const session = new RecorderSessionController();
+  session.begin("s1");
+
+  const started = session.waitForStart();
+  assert.equal(session.acceptStart("s1"), true);
+  await started;
+
+  assert.equal(session.failStop("s1", "renderer stopped unexpectedly"), true);
+  await assert.rejects(() => session.waitForStop(), /renderer stopped unexpectedly/);
+  assert.equal(session.snapshot().activeSessionId, null);
+});
+
 test("recorder session rejects stale events", async () => {
   const session = new RecorderSessionController();
   session.begin("s1");

@@ -9,7 +9,7 @@ let limitFailure = null;
 let audioContext = null;
 let silenceInterval = null;
 
-const SILENCE_AUTO_STOP_MS = 10_000;
+const SILENCE_AUTO_STOP_MS = 5_000;
 const VOICE_RMS_THRESHOLD = 0.025;
 
 window.recorderBridge.onStart(async (_event, options) => {

@@ -16,6 +16,7 @@ export class RecorderSessionController {
   private activeSessionId: string | null = null;
   private startResolver: ((response: { ok: boolean; error?: string }) => void) | null = null;
   private stopResolver: ((response: { ok: boolean; audioPath?: string | null; error?: string }) => void) | null = null;
+  private completedStop: { ok: boolean; audioPath?: string | null; error?: string } | null = null;
 
   begin(sessionId: string): void {
     if (this.activeSessionId) {
@@ -23,6 +24,7 @@ export class RecorderSessionController {
     }
 
     this.activeSessionId = sessionId;
+    this.completedStop = null;
   }
 
   waitForStart(): Promise<void> {
@@ -41,6 +43,17 @@ export class RecorderSessionController {
   }
 
   waitForStop(): Promise<string | null> {
+    if (this.completedStop) {
+      const response = this.completedStop;
+      this.completedStop = null;
+      this.activeSessionId = null;
+      if (!response.ok) {
+        return Promise.reject(new Error(response.error || "Recording failed."));
+      }
+
+      return Promise.resolve(response.audioPath || null);
+    }
+
     return new Promise((resolve, reject) => {
       this.stopResolver = (response) => {
         this.stopResolver = null;
@@ -81,7 +94,12 @@ export class RecorderSessionController {
       return false;
     }
 
-    this.stopResolver?.({ ok: true, audioPath });
+    if (this.stopResolver) {
+      this.stopResolver({ ok: true, audioPath });
+      return true;
+    }
+
+    this.completedStop = { ok: true, audioPath };
     return true;
   }
 
@@ -90,7 +108,12 @@ export class RecorderSessionController {
       return false;
     }
 
-    this.stopResolver?.({ ok: false, error: message });
+    if (this.stopResolver) {
+      this.stopResolver({ ok: false, error: message });
+      return true;
+    }
+
+    this.completedStop = { ok: false, error: message };
     return true;
   }
 
@@ -99,6 +122,7 @@ export class RecorderSessionController {
     this.stopResolver?.({ ok: false, error: message });
     this.startResolver = null;
     this.stopResolver = null;
+    this.completedStop = null;
     this.activeSessionId = null;
   }
 
