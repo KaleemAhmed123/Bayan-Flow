@@ -13,9 +13,11 @@ const status = document.getElementById("status");
 const health = document.getElementById("health");
 const autoPasteWarning = document.getElementById("autoPasteWarning");
 const setupNotice = document.getElementById("setupNotice");
+const API_KEY_MASK = "********";
 
 window.settingsBridge.load().then((config) => {
-  fields.groqApiKey.value = config.groqApiKey || "";
+  const localHealth = config.health || {};
+  setApiKeyMasked(Boolean(localHealth.hasGroqApiKey));
   fields.hotkey.value = config.hotkey;
   fields.transcriptionModel.value = config.transcriptionModel;
   fields.cleanupModel.value = config.cleanupModel;
@@ -25,7 +27,6 @@ window.settingsBridge.load().then((config) => {
   fields.autoPasteConfirmed.checked = config.autoPaste;
   updateAutoPasteWarning();
 
-  const localHealth = config.health || {};
   setupNotice.hidden = localHealth.hasGroqApiKey;
   health.innerHTML = "";
   for (const [label, value] of [
@@ -54,7 +55,7 @@ window.settingsBridge.load().then((config) => {
 
 document.getElementById("save").addEventListener("click", async () => {
   const save = document.getElementById("save");
-  setStatus("", "");
+  setStatus("Saving settings...", "info");
 
   if (fields.autoPaste.checked && !fields.autoPasteConfirmed.checked) {
     setStatus("Review and confirm the auto-paste warning", "error");
@@ -64,8 +65,9 @@ document.getElementById("save").addEventListener("click", async () => {
   save.disabled = true;
 
   try {
-    await window.settingsBridge.save({
-      groqApiKey: fields.groqApiKey.value.trim(),
+    const submittedApiKey = getApiKeyValueForSave();
+    const saved = await window.settingsBridge.save({
+      groqApiKey: submittedApiKey,
       hotkey: fields.hotkey.value.trim() || "Ctrl+Shift+Space",
       transcriptionModel: fields.transcriptionModel.value.trim() || "whisper-large-v3",
       cleanupModel: fields.cleanupModel.value.trim() || "llama-3.3-70b-versatile",
@@ -73,9 +75,11 @@ document.getElementById("save").addEventListener("click", async () => {
       cleanupEnabled: fields.cleanupEnabled.checked,
       openAtLogin: fields.openAtLogin.checked,
     });
-    setStatus("Saved", "success");
+    setApiKeyMasked(Boolean(saved?.health?.hasGroqApiKey || submittedApiKey));
+    setupNotice.hidden = true;
+    setStatus("Settings saved. BayanFlow is ready.", "success");
   } catch {
-    setStatus("Could not save settings", "error");
+    setStatus("Could not save settings. Check the key and model names.", "error");
   } finally {
     save.disabled = false;
   }
@@ -88,11 +92,23 @@ document.getElementById("testMic").addEventListener("click", async () => {
 
   try {
     await window.settingsBridge.testMicrophone();
-    setStatus("Microphone ready", "success");
+    setStatus("Microphone is ready.", "success");
   } catch {
-    setStatus("Microphone permission or device failed", "error");
+    setStatus("Microphone test failed. Check Windows microphone permission and selected input device.", "error");
   } finally {
     button.disabled = false;
+  }
+});
+
+fields.groqApiKey.addEventListener("focus", () => {
+  if (isApiKeyMasked()) {
+    fields.groqApiKey.select();
+  }
+});
+
+fields.groqApiKey.addEventListener("input", () => {
+  if (fields.groqApiKey.value !== API_KEY_MASK) {
+    fields.groqApiKey.dataset.masked = "false";
   }
 });
 
@@ -106,6 +122,20 @@ fields.autoPaste.addEventListener("change", () => {
 
 function updateAutoPasteWarning() {
   autoPasteWarning.hidden = !fields.autoPaste.checked;
+}
+
+function setApiKeyMasked(hasKey) {
+  fields.groqApiKey.value = hasKey ? API_KEY_MASK : "";
+  fields.groqApiKey.dataset.masked = hasKey ? "true" : "false";
+  fields.groqApiKey.placeholder = hasKey ? "Saved API key" : "Paste your Groq API key";
+}
+
+function isApiKeyMasked() {
+  return fields.groqApiKey.dataset.masked === "true" && fields.groqApiKey.value === API_KEY_MASK;
+}
+
+function getApiKeyValueForSave() {
+  return isApiKeyMasked() ? "" : fields.groqApiKey.value.trim();
 }
 
 function setStatus(message, state) {

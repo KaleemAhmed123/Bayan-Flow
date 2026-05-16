@@ -59,7 +59,11 @@ export class SettingsWindow {
         cleanupEnabled: nextConfig.cleanupEnabled,
         openAtLogin: nextConfig.openAtLogin,
       });
-      return nextConfig;
+      return {
+        ...nextConfig,
+        groqApiKey: "",
+        health: this.getHealth(),
+      };
     });
     ipcMain.handle("settings:test-mic", async (event) => {
       this.assertSender(event.sender.id);
