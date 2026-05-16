@@ -4,8 +4,10 @@ import { logger } from "../observability/app-logger.js";
 import { normalizeError } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 
-const PASTE_SETTLE_MS = 120;
-const CLIPBOARD_RESTORE_MS = 350;
+const PASTE_SETTLE_MS = 180;
+const CLIPBOARD_RESTORE_MS = 800;
+const CLIPBOARD_WRITE_ATTEMPTS = 3;
+const CLIPBOARD_WRITE_RETRY_MS = 30;
 
 export type PasteTarget = {
   title: string;
@@ -18,7 +20,8 @@ type ClipboardLike = {
 };
 
 type KeyboardLike = {
-  type(...keys: Key[]): Promise<unknown>;
+  pressKey(...keys: Key[]): Promise<unknown>;
+  releaseKey(...keys: Key[]): Promise<unknown>;
 };
 
 type WindowProviderLike = {
@@ -64,23 +67,21 @@ export class TextInserter {
 
     try {
       await this.assertActiveTarget(expectedTarget, context);
-      this.deps.clipboard.writeText(text);
-      await sleep(40);
+      await this.writeClipboardWithRetry(text, context);
+      await sleep(75);
       await this.assertActiveTarget(expectedTarget, context);
-      await this.deps.keyboard.type(Key.LeftControl, Key.V);
+      await this.sendPasteShortcut(context);
       await sleep(PASTE_SETTLE_MS);
-      setTimeout(() => {
-        if (this.deps.clipboard.readText() !== text) {
-          void logger.info("clipboard.restore.skipped_changed", context);
-          return;
-        }
-
-        this.deps.clipboard.writeText(previousText);
-        void logger.info("clipboard.restore.success", context);
-      }, this.deps.restoreDelayMs);
+      setTimeout(() => void this.restoreClipboardIfUnchanged(text, previousText, context), this.deps.restoreDelayMs);
       void logger.info("clipboard.paste.success", { ...context, textChars: text.length });
     } catch (error) {
-      this.deps.clipboard.writeText(text);
+      await this.writeClipboardWithRetry(text, context).catch((clipboardError) => {
+        void logger.error("clipboard.copy_after_paste_failed", {
+          ...context,
+          textChars: text.length,
+          error: normalizeError("paste", clipboardError),
+        });
+      });
       void logger.error("clipboard.paste.failed", { ...context, textChars: text.length, error: normalizeError("paste", error) });
       throw error;
     }
@@ -95,14 +96,18 @@ export class TextInserter {
     const title = await activeWindow.getTitle();
     const handle = getWindowHandle(activeWindow);
     const expectedHandle = expectedTarget.handle ?? null;
-    if (expectedHandle !== null && handle !== expectedHandle) {
-      void logger.warn("paste.target.changed", {
-        ...context,
-        expectedHasHandle: true,
-        actualHasHandle: handle !== null,
-        titleChars: title.length,
-      });
-      throw new Error("Active window changed before paste.");
+    if (expectedHandle !== null) {
+      if (handle !== expectedHandle) {
+        void logger.warn("paste.target.changed", {
+          ...context,
+          expectedHasHandle: true,
+          actualHasHandle: handle !== null,
+          titleChars: title.length,
+        });
+        throw new Error("Active window changed before paste.");
+      }
+
+      return;
     }
 
     if (title !== expectedTarget.title) {
@@ -113,6 +118,51 @@ export class TextInserter {
         actualTitleChars: title.length,
       });
       throw new Error("Active window changed before paste.");
+    }
+  }
+
+  private async sendPasteShortcut(context: OperationContext): Promise<void> {
+    let pressed = false;
+    try {
+      await this.deps.keyboard.pressKey(Key.LeftControl, Key.V);
+      pressed = true;
+      await sleep(40);
+    } finally {
+      if (pressed) {
+        await this.deps.keyboard.releaseKey(Key.LeftControl, Key.V).catch((error) => {
+          void logger.warn("clipboard.paste.shortcut_release_failed", { ...context, error: normalizeError("paste", error) });
+        });
+      }
+    }
+  }
+
+  private async writeClipboardWithRetry(text: string, context: OperationContext): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= CLIPBOARD_WRITE_ATTEMPTS; attempt += 1) {
+      try {
+        this.deps.clipboard.writeText(text);
+        return;
+      } catch (error) {
+        lastError = error;
+        void logger.warn("clipboard.write.retry", { ...context, attempt, error: normalizeError("paste", error) });
+        await sleep(CLIPBOARD_WRITE_RETRY_MS * attempt);
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async restoreClipboardIfUnchanged(text: string, previousText: string, context: OperationContext): Promise<void> {
+    try {
+      if (this.deps.clipboard.readText() !== text) {
+        void logger.info("clipboard.restore.skipped_changed", context);
+        return;
+      }
+
+      await this.writeClipboardWithRetry(previousText, context);
+      void logger.info("clipboard.restore.success", context);
+    } catch (error) {
+      void logger.warn("clipboard.restore.failed", { ...context, error: normalizeError("paste", error) });
     }
   }
 }

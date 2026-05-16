@@ -14,7 +14,7 @@ function createInserter({ title = "Target", handle = 101, failPaste = false, mut
       },
     },
     keyboard: {
-      type: async () => {
+      pressKey: async () => {
         if (failPaste) {
           throw new Error("blocked");
         }
@@ -23,6 +23,7 @@ function createInserter({ title = "Target", handle = 101, failPaste = false, mut
           clipboardText = "user copied this";
         }
       },
+      releaseKey: async () => {},
     },
     windowProvider: {
       getActiveWindow: async () => ({ getTitle: async () => title, windowHandle: handle }),
@@ -73,4 +74,12 @@ test("pasteText rejects when active window handle changes even if title is uncha
   const { inserter, getClipboard } = createInserter({ title: "Target", handle: 202 });
   await assert.rejects(() => inserter.pasteText("final", {}, { title: "Target", handle: 101 }), /Active window changed/);
   assert.equal(getClipboard(), "final");
+});
+
+test("pasteText allows title changes when the window handle is unchanged", async () => {
+  const { inserter, getClipboard } = createInserter({ title: "Updated title", handle: 101 });
+  await inserter.pasteText("final", {}, { title: "Original title", handle: 101 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  assert.equal(getClipboard(), "previous");
 });
