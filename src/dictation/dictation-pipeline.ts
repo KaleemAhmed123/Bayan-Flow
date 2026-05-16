@@ -15,6 +15,8 @@ export type DictationPipelineResult =
   | { status: "success"; result: DictationResult; cleanupFallback: false }
   | { status: "cleanup_fallback"; result: DictationResult; cleanupFallback: true; error: NormalizedError };
 
+export type DictationPipelineStage = "transcribing" | "cleaning";
+
 export async function runDictationPipelineWithProviders(options: {
   audioPath: string;
   context: OperationContext;
@@ -23,8 +25,10 @@ export async function runDictationPipelineWithProviders(options: {
   cleanupRequestId: string;
   transcription: TranscriptionLike;
   cleanup?: CleanupLike;
+  onStage?: (stage: DictationPipelineStage) => void | Promise<void>;
   onCleanupFallback?: (error: NormalizedError, rawText: string) => void | Promise<void>;
 }): Promise<DictationPipelineResult> {
+  await options.onStage?.("transcribing");
   const rawText = await options.transcription.transcribe(options.audioPath, {
     ...options.context,
     requestId: options.transcriptionRequestId,
@@ -43,6 +47,7 @@ export async function runDictationPipelineWithProviders(options: {
   }
 
   try {
+    await options.onStage?.("cleaning");
     const finalText = await options.cleanup.clean(
       rawTextValue,
       { mode: "default" },

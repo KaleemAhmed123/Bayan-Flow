@@ -5,6 +5,8 @@ import type { OperationContext } from "../types.js";
 import { buildCleanupPrompt, type CleanupOptions, type CleanupProvider } from "./cleanup-provider.js";
 
 const GROQ_TIMEOUT_MS = 45_000;
+const MIN_CLEANUP_OUTPUT_TOKENS = 96;
+const MAX_CLEANUP_OUTPUT_TOKENS = 900;
 
 export class GroqCleanupProvider implements CleanupProvider {
   private readonly client: Groq;
@@ -24,6 +26,7 @@ export class GroqCleanupProvider implements CleanupProvider {
     const startedAt = Date.now();
     const requestId = context.requestId || createRequestId("cleanup");
     const prompt = buildCleanupPrompt(trimmed, options);
+    const maxOutputTokens = estimateCleanupOutputTokens(trimmed);
 
     void logger.info("groq.cleanup.start", {
       ...context,
@@ -31,6 +34,7 @@ export class GroqCleanupProvider implements CleanupProvider {
       model: this.model,
       inputChars: trimmed.length,
       promptChars: prompt.length,
+      maxOutputTokens,
     });
 
     try {
@@ -39,7 +43,7 @@ export class GroqCleanupProvider implements CleanupProvider {
           this.client.chat.completions.create({
             model: this.model,
             temperature: 0,
-            max_completion_tokens: 400,
+            max_completion_tokens: maxOutputTokens,
             messages: [
               {
                 role: "system",
@@ -89,6 +93,11 @@ export class GroqCleanupProvider implements CleanupProvider {
       throw error;
     }
   }
+}
+
+function estimateCleanupOutputTokens(input: string): number {
+  const estimatedInputTokens = Math.ceil(input.length / 4);
+  return Math.min(MAX_CLEANUP_OUTPUT_TOKENS, Math.max(MIN_CLEANUP_OUTPUT_TOKENS, estimatedInputTokens + 64));
 }
 
 function createRequestId(prefix: string): string {

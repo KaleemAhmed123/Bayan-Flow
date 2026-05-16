@@ -85,3 +85,20 @@ test("dictation pipeline requests english transcription options", async () => {
   assert.equal(output.result.finalText, "raw words");
   assert.deepEqual(capturedOptions, { language: "en" });
 });
+
+test("dictation pipeline reports user-facing processing stages", async () => {
+  const stages = [];
+  const output = await runDictationPipelineWithProviders({
+    audioPath: "audio.webm",
+    context: { sessionId: "s1" },
+    cleanupEnabled: true,
+    transcriptionRequestId: "t1",
+    cleanupRequestId: "c1",
+    transcription: { transcribe: async () => ({ text: "raw words", language: "en", segments: [], confidence: { weakSegmentCount: 0, averageLogprob: null, highNoSpeechSegmentCount: 0, bucket: "strong", retried: false } }) },
+    cleanup: { clean: async () => "clean words" },
+    onStage: (stage) => stages.push(stage),
+  });
+
+  assert.equal(output.result.finalText, "clean words");
+  assert.deepEqual(stages, ["transcribing", "cleaning"]);
+});
