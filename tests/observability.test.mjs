@@ -8,6 +8,7 @@ import { ConfigStore } from "../dist/config-store.js";
 import { normalizeError } from "../dist/observability/errors.js";
 import { logger } from "../dist/observability/app-logger.js";
 import { FileLogSink, Logger, sanitize } from "../dist/observability/logger.js";
+import { GroqRewriteProvider } from "../dist/rewrite/groq-rewrite-provider.js";
 
 test("logger redacts sensitive fields and writes json lines", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "whispr-logs-"));
@@ -104,4 +105,33 @@ test("groq cleanup logs token usage without content", async () => {
   assert.equal(success.fields.usage.completion_tokens, 3);
   assert.equal(success.fields.usage.total_tokens, 14);
   assert.equal(JSON.stringify(success).includes("rough text"), false);
+});
+
+test("groq rewrite logs metadata without content", async () => {
+  const entries = [];
+  logger.configure([{ write: async (entry) => entries.push(entry) }]);
+
+  const provider = new GroqRewriteProvider("gsk_test_key", "test-model");
+  provider.client = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ message: { content: "professional output" } }],
+          usage: {
+            prompt_tokens: 20,
+            completion_tokens: 4,
+            total_tokens: 24,
+          },
+        }),
+      },
+    },
+  };
+
+  const output = await provider.rewrite("private selected text", { actionId: "professional" }, { sessionId: "session-test" });
+
+  assert.equal(output, "professional output");
+  const serialized = JSON.stringify(entries);
+  assert.equal(serialized.includes("private selected text"), false);
+  assert.equal(serialized.includes("professional output"), false);
+  assert.equal(entries.some((entry) => entry.event === "groq.rewrite.success"), true);
 });
