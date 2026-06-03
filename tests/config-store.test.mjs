@@ -14,6 +14,8 @@ test("normalizes renderer-provided config before use", () => {
 
   assert.equal(config.groqApiKey, "gsk_test_key");
   assert.equal(config.hotkey, "Ctrl+Shift+Space");
+  assert.equal(config.inputAssistHotkey, "Ctrl+Shift+Enter");
+  assert.equal(config.inputAssistEnabledOnStartup, false);
   assert.equal(config.autoPaste, false);
   assert.equal(config.cleanupEnabled, false);
   assert.equal(config.transcriptionModel, "whisper-large-v3");

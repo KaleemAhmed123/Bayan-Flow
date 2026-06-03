@@ -9,6 +9,8 @@ import type { AppConfig } from "./types.js";
 const DEFAULT_CONFIG: AppConfig = {
   groqApiKey: "",
   hotkey: "Ctrl+Shift+Space",
+  inputAssistHotkey: "Ctrl+Shift+Enter",
+  inputAssistEnabledOnStartup: false,
   autoPaste: false,
   cleanupEnabled: true,
   openAtLogin: false,
@@ -70,6 +72,8 @@ export class ConfigStore {
       hasGroqApiKey: Boolean(config.groqApiKey),
       apiKeyStorage: encryptedApiKey ? "encrypted" : config.groqApiKey ? "plaintext_fallback" : "empty",
       hotkey: config.hotkey,
+      inputAssistHotkey: config.inputAssistHotkey,
+      inputAssistEnabledOnStartup: config.inputAssistEnabledOnStartup,
       autoPaste: config.autoPaste,
       cleanupEnabled: config.cleanupEnabled,
       openAtLogin: config.openAtLogin,
@@ -124,6 +128,8 @@ export function normalizeConfig(input: Partial<AppConfig>): AppConfig {
   return {
     groqApiKey: stringOr(input.groqApiKey, process.env.GROQ_API_KEY || ""),
     hotkey: hotkeyOr(input.hotkey, DEFAULT_CONFIG.hotkey),
+    inputAssistHotkey: hotkeyOr(input.inputAssistHotkey, DEFAULT_CONFIG.inputAssistHotkey),
+    inputAssistEnabledOnStartup: booleanOr(input.inputAssistEnabledOnStartup, DEFAULT_CONFIG.inputAssistEnabledOnStartup),
     autoPaste: booleanOr(input.autoPaste, DEFAULT_CONFIG.autoPaste),
     cleanupEnabled: booleanOr(input.cleanupEnabled, DEFAULT_CONFIG.cleanupEnabled),
     openAtLogin: booleanOr(input.openAtLogin, DEFAULT_CONFIG.openAtLogin),

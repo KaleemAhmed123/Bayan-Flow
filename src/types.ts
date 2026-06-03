@@ -1,10 +1,20 @@
 export type AppStatus = "idle" | "listening" | "processing" | "confirm" | "pasting" | "error";
+export type RuntimeState =
+  | "setup"
+  | "ready"
+  | "recording"
+  | "processing"
+  | "input-assist"
+  | "hotkey-unavailable"
+  | "error";
 
 export type CleanupMode = "default";
 
 export type AppConfig = {
   groqApiKey: string;
   hotkey: string;
+  inputAssistHotkey: string;
+  inputAssistEnabledOnStartup: boolean;
   autoPaste: boolean;
   cleanupEnabled: boolean;
   openAtLogin: boolean;
