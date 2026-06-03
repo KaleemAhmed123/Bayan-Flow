@@ -1,16 +1,19 @@
 const fields = {
   groqApiKey: document.getElementById("groqApiKey"),
   hotkey: document.getElementById("hotkey"),
+  inputAssistHotkey: document.getElementById("inputAssistHotkey"),
   transcriptionModel: document.getElementById("transcriptionModel"),
   cleanupModel: document.getElementById("cleanupModel"),
   autoPaste: document.getElementById("autoPaste"),
   autoPasteConfirmed: document.getElementById("autoPasteConfirmed"),
   cleanupEnabled: document.getElementById("cleanupEnabled"),
+  inputAssistEnabledOnStartup: document.getElementById("inputAssistEnabledOnStartup"),
   openAtLogin: document.getElementById("openAtLogin"),
 };
 
 const status = document.getElementById("status");
 const health = document.getElementById("health");
+const setupChecklist = document.getElementById("setupChecklist");
 const autoPasteWarning = document.getElementById("autoPasteWarning");
 const setupNotice = document.getElementById("setupNotice");
 const API_KEY_MASK = "********";
@@ -19,19 +22,23 @@ window.settingsBridge.load().then((config) => {
   const localHealth = config.health || {};
   setApiKeyMasked(Boolean(localHealth.hasGroqApiKey));
   fields.hotkey.value = config.hotkey;
+  fields.inputAssistHotkey.value = config.inputAssistHotkey;
   fields.transcriptionModel.value = config.transcriptionModel;
   fields.cleanupModel.value = config.cleanupModel;
   fields.autoPaste.checked = config.autoPaste;
   fields.cleanupEnabled.checked = config.cleanupEnabled;
+  fields.inputAssistEnabledOnStartup.checked = config.inputAssistEnabledOnStartup;
   fields.openAtLogin.checked = config.openAtLogin;
   fields.autoPasteConfirmed.checked = config.autoPaste;
   updateAutoPasteWarning();
 
   setupNotice.hidden = localHealth.hasGroqApiKey;
+  renderSetupChecklist(config, localHealth);
   health.innerHTML = "";
   for (const [label, value] of [
     ["API key", localHealth.hasGroqApiKey ? "Present" : "Missing"],
     ["Hotkey", localHealth.hotkeyAvailable ? "Active" : "Unavailable"],
+    ["Input Assist", config.inputAssistEnabledOnStartup ? "Starts enabled" : "Manual"],
     ["Paste mode", localHealth.pasteMode === "auto" ? "Auto paste" : "Copy only"],
     ["Last mic error", localHealth.lastMicError || "None"],
     ["Last error", localHealth.lastErrorId || "None"],
@@ -69,17 +76,19 @@ document.getElementById("save").addEventListener("click", async () => {
     const saved = await window.settingsBridge.save({
       groqApiKey: submittedApiKey,
       hotkey: fields.hotkey.value.trim() || "Ctrl+Shift+Space",
+      inputAssistHotkey: fields.inputAssistHotkey.value.trim() || "Ctrl+Shift+Enter",
       transcriptionModel: fields.transcriptionModel.value.trim() || "whisper-large-v3",
       cleanupModel: fields.cleanupModel.value.trim() || "llama-3.3-70b-versatile",
       autoPaste: fields.autoPaste.checked,
       cleanupEnabled: fields.cleanupEnabled.checked,
+      inputAssistEnabledOnStartup: fields.inputAssistEnabledOnStartup.checked,
       openAtLogin: fields.openAtLogin.checked,
     });
     setApiKeyMasked(Boolean(saved?.health?.hasGroqApiKey || submittedApiKey));
     setupNotice.hidden = true;
     setStatus("Settings saved. BayanFlow is ready.", "success");
-  } catch {
-    setStatus("Could not save settings. Check the key and model names.", "error");
+  } catch (error) {
+    setStatus(error?.message || "Could not save settings. Check the key, hotkey, and model names.", "error");
   } finally {
     save.disabled = false;
   }
@@ -124,6 +133,56 @@ function updateAutoPasteWarning() {
   autoPasteWarning.hidden = !fields.autoPaste.checked;
 }
 
+function renderSetupChecklist(config, localHealth) {
+  setupChecklist.innerHTML = "";
+  for (const item of [
+    {
+      done: Boolean(localHealth.hasGroqApiKey),
+      title: "Add Groq API key",
+      copy: "Required before any dictation can be transcribed.",
+    },
+    {
+      done: !localHealth.lastMicError,
+      title: "Test microphone",
+      copy: "Use the button at the top before your first real recording.",
+    },
+    {
+      done: Boolean(localHealth.hotkeyAvailable),
+      title: "Confirm hotkey is active",
+      copy: `Current hotkey: ${config.hotkey || "Ctrl+Shift+Space"}. Press it once to start and again to finish.`,
+    },
+    {
+      done: Boolean(config.inputAssistHotkey),
+      title: "Know the Input Assist hotkey",
+      copy: `Current Input Assist hotkey: ${config.inputAssistHotkey || "Ctrl+Shift+Enter"}. Use it to toggle the floating magic icon.`,
+    },
+    {
+      done: true,
+      title: config.autoPaste ? "Auto-paste enabled" : "Copy-only mode selected",
+      copy: config.autoPaste ? "BayanFlow will paste into the original target when Windows allows it." : "Safer default: text is copied and ready for Ctrl+V.",
+    },
+  ]) {
+    const row = document.createElement("li");
+    row.dataset.state = item.done ? "done" : "todo";
+
+    const icon = document.createElement("span");
+    icon.className = "check-icon";
+    icon.textContent = item.done ? "OK" : "!";
+
+    const copy = document.createElement("span");
+    const title = document.createElement("span");
+    title.className = "check-title";
+    title.textContent = item.title;
+    const detail = document.createElement("span");
+    detail.className = "check-copy";
+    detail.textContent = item.copy;
+    copy.append(title, detail);
+
+    row.append(icon, copy);
+    setupChecklist.append(row);
+  }
+}
+
 function setApiKeyMasked(hasKey) {
   fields.groqApiKey.value = hasKey ? API_KEY_MASK : "";
   fields.groqApiKey.dataset.masked = hasKey ? "true" : "false";
@@ -159,6 +218,10 @@ function resolveHealthState(label, value) {
 
   if (label === "Paste mode" && value === "Auto paste") {
     return "warning";
+  }
+
+  if (label === "Input Assist") {
+    return "good";
   }
 
   return "good";

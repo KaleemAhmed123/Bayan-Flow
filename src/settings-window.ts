@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConfigStore, normalizeConfig } from "./config-store.js";
 import { BrowserWindow, ipcMain } from "./electron.js";
+import { parseHotkey } from "./hotkey/hotkey-parser.js";
 import { logger } from "./observability/app-logger.js";
 import type { AppConfig } from "./types.js";
 
@@ -44,10 +45,16 @@ export class SettingsWindow {
     });
     ipcMain.handle("settings:save", async (event, config: AppConfig) => {
       this.assertSender(event.sender.id);
+      validateSubmittedHotkey(config.hotkey);
+      validateSubmittedHotkey(config.inputAssistHotkey);
       const existingConfig = await this.configStore.load();
       const nextConfig = normalizeConfig({
         ...config,
         groqApiKey: config.groqApiKey?.trim() ? config.groqApiKey : existingConfig.groqApiKey,
+        inputAssistEnabledOnStartup:
+          typeof config.inputAssistEnabledOnStartup === "boolean"
+            ? config.inputAssistEnabledOnStartup
+            : existingConfig.inputAssistEnabledOnStartup,
         openAtLogin: typeof config.openAtLogin === "boolean" ? config.openAtLogin : existingConfig.openAtLogin,
       });
       await this.configStore.save(nextConfig);
@@ -55,6 +62,8 @@ export class SettingsWindow {
       void logger.info("settings.save.success", {
         hasGroqApiKey: Boolean(nextConfig.groqApiKey),
         hotkey: nextConfig.hotkey,
+        inputAssistHotkey: nextConfig.inputAssistHotkey,
+        inputAssistEnabledOnStartup: nextConfig.inputAssistEnabledOnStartup,
         autoPaste: nextConfig.autoPaste,
         cleanupEnabled: nextConfig.cleanupEnabled,
         openAtLogin: nextConfig.openAtLogin,
@@ -112,4 +121,15 @@ export class SettingsWindow {
 function hardenWindow(window: InstanceType<typeof BrowserWindow>): void {
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+}
+
+function validateSubmittedHotkey(hotkey: unknown): void {
+  if (typeof hotkey !== "string" || !hotkey.trim()) {
+    throw new Error("Choose a hotkey before saving.");
+  }
+
+  const parsed = parseHotkey(hotkey);
+  if (parsed.modifiers.length === 0) {
+    throw new Error("Hotkey must include at least one modifier, such as Ctrl or Alt.");
+  }
 }

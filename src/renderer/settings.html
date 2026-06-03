@@ -27,6 +27,16 @@
         Add your Groq API key, confirm the hotkey, then save. BayanFlow stays in copy-only mode until you explicitly enable auto-paste.
       </section>
 
+      <section class="setup-checklist surface" aria-labelledby="setupChecklistTitle">
+        <div class="section-head">
+          <div>
+            <h2 id="setupChecklistTitle">Setup Checklist</h2>
+            <p>Complete these once before relying on BayanFlow in another app.</p>
+          </div>
+        </div>
+        <ol class="checklist" id="setupChecklist"></ol>
+      </section>
+
       <section class="content-grid">
         <div class="stack">
           <section class="surface">
@@ -45,6 +55,13 @@
               <label class="field field-span" for="hotkey">
                 <span class="field-label">Activation hotkey</span>
                 <input id="hotkey" type="text" />
+                <span class="field-help">Use at least one modifier, for example Ctrl+Shift+Space or Ctrl+Alt+Space.</span>
+              </label>
+
+              <label class="field field-span" for="inputAssistHotkey">
+                <span class="field-label">Input Assist hotkey</span>
+                <input id="inputAssistHotkey" type="text" />
+                <span class="field-help">Toggles the floating magic icon near focused inputs. Default: Ctrl+Shift+Enter.</span>
               </label>
             </div>
           </section>
@@ -103,6 +120,14 @@
                 <span>
                   <span class="toggle-title">Clean transcript with AI before inserting</span>
                   <span class="toggle-copy">Use the cleanup model to normalize punctuation and formatting before text is copied or pasted.</span>
+                </span>
+              </label>
+
+              <label class="toggle">
+                <input id="inputAssistEnabledOnStartup" type="checkbox" />
+                <span>
+                  <span class="toggle-title">Enable Input Assist when BayanFlow starts</span>
+                  <span class="toggle-copy">Show the floating magic icon beside focused editable inputs when Windows can detect them.</span>
                 </span>
               </label>
 
