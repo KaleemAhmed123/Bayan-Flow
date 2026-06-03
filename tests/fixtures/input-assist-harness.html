@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Input Assist Harness</title>
+    <link rel="stylesheet" href="../../src/renderer/input-assist.css" />
+    <script>
+      window.__inputAssistCalls = [];
+      window.__inputAssistState = null;
+      window.inputAssistBridge = {
+        onState(callback) {
+          window.__setInputAssistState = callback;
+          setTimeout(() => callback({ view: "icon" }), 0);
+        },
+        openMenu() {
+          window.__inputAssistCalls.push(["openMenu"]);
+          window.__setInputAssistState({ view: "menu" });
+          return Promise.resolve();
+        },
+        runAction(actionId, customInstruction) {
+          window.__inputAssistCalls.push(["runAction", actionId, customInstruction || ""]);
+          window.__setInputAssistState({ view: "loading", message: actionId });
+          return Promise.resolve();
+        },
+        speak() {
+          window.__inputAssistCalls.push(["speak"]);
+          return Promise.resolve();
+        },
+        replace() {
+          window.__inputAssistCalls.push(["replace"]);
+          return Promise.resolve();
+        },
+        copy() {
+          window.__inputAssistCalls.push(["copy"]);
+          return Promise.resolve();
+        },
+        retry() {
+          window.__inputAssistCalls.push(["retry"]);
+          return Promise.resolve();
+        },
+        cancel() {
+          window.__inputAssistCalls.push(["cancel"]);
+          return Promise.resolve();
+        },
+      };
+    </script>
+  </head>
+  <body>
+    <main id="root" class="assist" data-view="icon">
+      <button id="magic" class="magic" type="button" title="BayanFlow actions">
+        <img src="../../src/assets/magic-wand.png" alt="" />
+      </button>
+
+      <section id="menu" class="panel menu" hidden>
+        <div class="panel-head">
+          <strong>BayanFlow</strong>
+          <button id="closeMenu" class="ghost" type="button">x</button>
+        </div>
+        <button id="speak" class="action primary" type="button">Speak here</button>
+        <div id="actions" class="actions"></div>
+        <div id="customRow" class="custom-row" hidden>
+          <input id="customInput" type="text" placeholder="Ask or transform text" />
+          <button id="customRun" type="button">Run</button>
+        </div>
+      </section>
+
+      <section id="loading" class="panel compact" hidden>
+        <strong>Working...</strong>
+        <p id="loadingMessage">Preparing text...</p>
+      </section>
+
+      <section id="error" class="panel compact" hidden>
+        <strong>Needs attention</strong>
+        <p id="errorMessage"></p>
+        <button id="dismissError" type="button">Close</button>
+      </section>
+
+      <section id="preview" class="panel preview" hidden>
+        <div class="panel-head">
+          <div>
+            <strong id="previewTitle">Preview</strong>
+            <span id="previewMeta"></span>
+          </div>
+          <button id="closePreview" class="ghost" type="button">x</button>
+        </div>
+        <textarea id="previewText" spellcheck="false"></textarea>
+        <div class="preview-actions">
+          <button id="replace" class="primary" type="button">Replace</button>
+          <button id="copy" type="button">Copy</button>
+          <button id="retry" type="button">Retry</button>
+        </div>
+      </section>
+    </main>
+    <script src="../../src/renderer/input-assist.js"></script>
+  </body>
+</html>
