@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Key } from "@nut-tree-fork/nut-js";
 import { TextInserter } from "../dist/insertion/text-inserter.js";
 
 function createInserter({ title = "Target", handle = 101, failPaste = false, mutateClipboardAfterPaste = false } = {}) {
@@ -38,6 +39,33 @@ test("copyText writes text without paste automation", () => {
   const { inserter, getClipboard } = createInserter();
   inserter.copyText("hello");
   assert.equal(getClipboard(), "hello");
+});
+
+test("captureActiveTarget includes normalized window bounds when available", async () => {
+  const inserter = new TextInserter({
+    clipboard: {
+      readText: () => "",
+      writeText: () => {},
+    },
+    keyboard: {
+      pressKey: async () => {},
+      releaseKey: async () => {},
+    },
+    windowProvider: {
+      getActiveWindow: async () => ({
+        getTitle: async () => "Target",
+        getRegion: async () => ({ left: 10.2, top: 20.7, width: 640.1, height: 480.4 }),
+        windowHandle: 101,
+      }),
+    },
+    restoreDelayMs: 0,
+  });
+
+  assert.deepEqual(await inserter.captureActiveTarget(), {
+    title: "Target",
+    handle: 101,
+    bounds: { x: 10, y: 21, width: 640, height: 480 },
+  });
 });
 
 test("pasteText restores previous clipboard after successful paste", async () => {
@@ -82,4 +110,81 @@ test("pasteText allows title changes when the window handle is unchanged", async
   await new Promise((resolve) => setTimeout(resolve, 5));
 
   assert.equal(getClipboard(), "previous");
+});
+
+test("captureTextFromTargetByClipboard captures selected text and restores clipboard", async () => {
+  const shortcuts = [];
+  let clipboardText = "previous";
+  const inserter = new TextInserter({
+    clipboard: {
+      readText: () => clipboardText,
+      writeText: (text) => {
+        clipboardText = text;
+      },
+    },
+    keyboard: {
+      pressKey: async (...keys) => {
+        shortcuts.push(keys);
+        if (keys.includes(Key.C)) {
+          clipboardText = "selected text";
+        }
+      },
+      releaseKey: async () => {},
+    },
+    windowProvider: {
+      getActiveWindow: async () => ({ getTitle: async () => "Target", windowHandle: 101 }),
+    },
+    restoreDelayMs: 0,
+  });
+
+  const source = await inserter.captureTextFromTargetByClipboard({ title: "Target", handle: 101 });
+
+  assert.deepEqual(source, { scope: "selection", text: "selected text" });
+  assert.equal(clipboardText, "previous");
+  assert.equal(shortcuts.some((keys) => keys.includes(Key.A)), false);
+});
+
+test("captureTextFromTargetByClipboard falls back to whole input after refocusing target window", async () => {
+  let clipboardText = "previous";
+  let activeHandle = 999;
+  let selectedAll = false;
+  const inserter = new TextInserter({
+    clipboard: {
+      readText: () => clipboardText,
+      writeText: (text) => {
+        clipboardText = text;
+      },
+    },
+    keyboard: {
+      pressKey: async (...keys) => {
+        if (keys.includes(Key.A)) {
+          selectedAll = true;
+        }
+
+        if (keys.includes(Key.C) && selectedAll) {
+          clipboardText = "whole input";
+        }
+      },
+      releaseKey: async () => {},
+    },
+    windowProvider: {
+      getActiveWindow: async () => ({ getTitle: async () => "Active", windowHandle: activeHandle }),
+      getWindows: async () => [
+        {
+          getTitle: async () => "Target",
+          windowHandle: 101,
+          focus: async () => {
+            activeHandle = 101;
+            return true;
+          },
+        },
+      ],
+    },
+    restoreDelayMs: 0,
+  });
+
+  const source = await inserter.captureTextFromTargetByClipboard({ title: "Target", handle: 101 });
+
+  assert.deepEqual(source, { scope: "whole", text: "whole input" });
+  assert.equal(clipboardText, "previous");
 });
