@@ -10,6 +10,11 @@ import { runDictationPipelineWithProviders } from "./dictation/dictation-pipelin
 import { app, crashReporter, Menu, nativeImage, shell, Tray } from "./electron.js";
 import { HotkeyListener } from "./hotkey/hotkey-listener.js";
 import { InputAssistWindow } from "./input-assist-window.js";
+import {
+  shouldPreferClipboardSelectionOverUiaWhole,
+  shouldPreferClipboardWholeOverUiaWhole,
+} from "./input-assist/rewrite-source-selection.js";
+import { getInputAssistSpeechReadiness } from "./input-assist/speech-readiness.js";
 import { UiaHelperClient } from "./input-assist/uia-helper.js";
 import { TextInserter } from "./insertion/text-inserter.js";
 import { configureLogger, logger } from "./observability/app-logger.js";
@@ -707,12 +712,14 @@ async function runInputAssistAction(actionName: string, action: () => Promise<vo
     await action();
     void logger.info("input_assist.action.finish", { actionName, durationMs: Date.now() - startedAt });
   } catch (error) {
+    const normalized = normalizeError("startup", error);
+    lastErrorId = normalized.id;
     void logger.error("input_assist.action.failed", {
       actionName,
       durationMs: Date.now() - startedAt,
-      error: normalizeError("startup", error),
+      error: normalized,
     });
-    throw error;
+    inputAssistWindow.showError(formatUserError(normalized.userMessage, normalized.id));
   } finally {
     clearInputAssistActionTimer();
     inputAssistActionInFlight = false;
@@ -756,27 +763,76 @@ function isUsableWindowHandle(windowHandle: number): boolean {
 }
 
 async function captureInputAssistRewriteSource(): Promise<RewriteTextSource | null> {
+  let uiaSource: RewriteTextSource | null = null;
+
   try {
     const source = await inputAssistHelper.captureText();
     if (source) {
+      uiaSource = {
+        targetKind: "uia",
+        scope: source.scope,
+        text: source.text,
+        targetId: source.target.targetId,
+        pasteTarget: inputAssistOriginPasteTarget,
+      };
       void logger.info("input_assist.capture.success", {
         source: "uia",
         scope: source.scope,
         textChars: source.text.length,
         hasTargetId: Boolean(source.target.targetId),
       });
-      return {
-        targetKind: "uia",
-        scope: source.scope,
-        text: source.text,
-        targetId: source.target.targetId,
-        pasteTarget: null,
-      };
+
+      if (source.scope === "selection") {
+        return uiaSource;
+      }
     }
   } catch (error) {
     void logger.debug("input_assist.capture.uia_skipped", { error: normalizeError("startup", error) });
   }
 
+  const clipboardSource = await captureInputAssistClipboardSource();
+  if (uiaSource?.scope === "whole") {
+    if (
+      clipboardSource?.scope === "selection" &&
+      shouldPreferClipboardSelectionOverUiaWhole(clipboardSource.text, uiaSource.text)
+    ) {
+      void logger.info("input_assist.capture.selection_override", {
+        source: "clipboard",
+        previousSource: "uia",
+        textChars: clipboardSource.text.length,
+      });
+      return clipboardSource;
+    }
+
+    if (clipboardSource?.scope === "selection") {
+      void logger.info("input_assist.capture.selection_ignored", {
+        reason: "likely_implicit_line_copy",
+        textChars: clipboardSource.text.length,
+      });
+    }
+
+    if (
+      clipboardSource?.scope === "whole" &&
+      shouldPreferClipboardWholeOverUiaWhole(clipboardSource.text, uiaSource.text)
+    ) {
+      void logger.info("input_assist.capture.whole_override", {
+        source: "clipboard",
+        previousSource: "uia",
+        clipboardChars: clipboardSource.text.length,
+        uiaChars: uiaSource.text.length,
+      });
+      return clipboardSource;
+    }
+
+    if (uiaSource.text.trim()) {
+      return uiaSource;
+    }
+  }
+
+  return clipboardSource;
+}
+
+async function captureInputAssistClipboardSource(): Promise<RewriteTextSource | null> {
   if (!inputAssistOriginPasteTarget) {
     return null;
   }
@@ -871,13 +927,15 @@ async function replacePendingRewrite(): Promise<void> {
     return;
   }
 
-  if (pendingRewrite.targetKind === "clipboard") {
-    if (!pendingRewrite.pasteTarget) {
-      inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy-unverified") });
+  const rewrite = pendingRewrite;
+
+  if (rewrite.targetKind === "clipboard") {
+    if (!rewrite.pasteTarget) {
+      inserter.copyText(rewrite.rewrittenText, { requestId: createId("rewrite-copy-unverified") });
       void logger.warn("input_assist.replace.unverified_copied", {
-        actionId: pendingRewrite.actionId,
-        scope: pendingRewrite.scope,
-        outputChars: pendingRewrite.rewrittenText.length,
+        actionId: rewrite.actionId,
+        scope: rewrite.scope,
+        outputChars: rewrite.rewrittenText.length,
       });
       closeInputAssistInteraction({ silentDisable: true });
       showStatus("error", "Could not refocus the input; rewritten text copied. Press Ctrl+V manually.");
@@ -886,24 +944,24 @@ async function replacePendingRewrite(): Promise<void> {
 
     try {
       const context = { requestId: createId("rewrite-window-paste") };
-      await inserter.focusTargetWindow(pendingRewrite.pasteTarget, context);
-      await inserter.pasteText(pendingRewrite.rewrittenText, context, pendingRewrite.pasteTarget);
+      await inserter.focusTargetWindow(rewrite.pasteTarget, context);
+      await inserter.pasteText(rewrite.rewrittenText, context, rewrite.pasteTarget);
       void logger.info("input_assist.replace.window_paste_success", {
-        actionId: pendingRewrite.actionId,
-        scope: pendingRewrite.scope,
-        outputChars: pendingRewrite.rewrittenText.length,
+        actionId: rewrite.actionId,
+        scope: rewrite.scope,
+        outputChars: rewrite.rewrittenText.length,
       });
       closeInputAssistInteraction({ silentDisable: true });
       showStatus("idle", "Pasted");
       return;
     } catch (error) {
-      inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy-window-fallback") });
+      inserter.copyText(rewrite.rewrittenText, { requestId: createId("rewrite-copy-window-fallback") });
       const normalized = normalizeError("paste", error);
       lastErrorId = normalized.id;
       void logger.error("input_assist.replace.window_paste_fallback_copied", {
-        actionId: pendingRewrite.actionId,
-        scope: pendingRewrite.scope,
-        outputChars: pendingRewrite.rewrittenText.length,
+        actionId: rewrite.actionId,
+        scope: rewrite.scope,
+        outputChars: rewrite.rewrittenText.length,
         error: normalized,
       });
       closeInputAssistInteraction({ silentDisable: true });
@@ -912,12 +970,12 @@ async function replacePendingRewrite(): Promise<void> {
     }
   }
 
-  if (!pendingRewrite.targetId) {
-    inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy-unverified") });
+  if (!rewrite.targetId) {
+    inserter.copyText(rewrite.rewrittenText, { requestId: createId("rewrite-copy-unverified") });
     void logger.warn("input_assist.replace.unverified_copied", {
-      actionId: pendingRewrite.actionId,
-      scope: pendingRewrite.scope,
-      outputChars: pendingRewrite.rewrittenText.length,
+      actionId: rewrite.actionId,
+      scope: rewrite.scope,
+      outputChars: rewrite.rewrittenText.length,
     });
     closeInputAssistInteraction({ silentDisable: true });
     showStatus("error", "Input not verified; rewritten text copied. Press Ctrl+V manually.");
@@ -925,37 +983,64 @@ async function replacePendingRewrite(): Promise<void> {
   }
 
   try {
-    if (pendingRewrite.scope === "whole") {
-      await inputAssistHelper.replaceWholeText(
-        pendingRewrite.targetId,
-        pendingRewrite.sourceText,
-        pendingRewrite.rewrittenText,
-      );
+    if (rewrite.scope === "whole") {
+      await replaceWholeInputAssistText(rewrite);
     } else {
-      await inputAssistHelper.verifySelection(pendingRewrite.targetId, pendingRewrite.sourceText);
-      await inserter.pasteText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-paste") }, null);
+      await inputAssistHelper.verifySelection(rewrite.targetId, rewrite.sourceText);
+      await inserter.pasteText(rewrite.rewrittenText, { requestId: createId("rewrite-paste") }, null);
     }
 
     void logger.info("input_assist.replace.success", {
-      actionId: pendingRewrite.actionId,
-      scope: pendingRewrite.scope,
-      outputChars: pendingRewrite.rewrittenText.length,
+      actionId: rewrite.actionId,
+      scope: rewrite.scope,
+      outputChars: rewrite.rewrittenText.length,
     });
     closeInputAssistInteraction({ silentDisable: true });
     showStatus("idle", "Replaced");
   } catch (error) {
-    inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy-fallback") });
+    inserter.copyText(rewrite.rewrittenText, { requestId: createId("rewrite-copy-fallback") });
     const normalized = normalizeError("paste", error);
     lastErrorId = normalized.id;
     void logger.error("input_assist.replace.fallback_copied", {
-      actionId: pendingRewrite.actionId,
-      scope: pendingRewrite.scope,
-      outputChars: pendingRewrite.rewrittenText.length,
+      actionId: rewrite.actionId,
+      scope: rewrite.scope,
+      outputChars: rewrite.rewrittenText.length,
       error: normalized,
     });
     closeInputAssistInteraction({ silentDisable: true });
-    showStatus("error", "Selection changed; rewritten text copied. Press Ctrl+V manually.");
+    showStatus("error", formatRewriteReplaceFallbackMessage(rewrite.scope));
   }
+}
+
+async function replaceWholeInputAssistText(rewrite: NonNullable<typeof pendingRewrite>): Promise<void> {
+  try {
+    await inputAssistHelper.replaceWholeText(rewrite.targetId || "", rewrite.sourceText, rewrite.rewrittenText);
+    return;
+  } catch (error) {
+    void logger.warn("input_assist.replace.direct_whole_skipped", {
+      actionId: rewrite.actionId,
+      error: normalizeError("paste", error),
+    });
+  }
+
+  if (!rewrite.pasteTarget) {
+    throw new Error("Input cannot be replaced directly.");
+  }
+
+  await inserter.replaceWholeTextByClipboard(
+    rewrite.sourceText,
+    rewrite.rewrittenText,
+    rewrite.pasteTarget,
+    { requestId: createId("rewrite-whole-clipboard") },
+  );
+}
+
+function formatRewriteReplaceFallbackMessage(scope: "selection" | "whole"): string {
+  if (scope === "selection") {
+    return "Selection changed; rewritten text copied. Press Ctrl+V manually.";
+  }
+
+  return "Input changed or blocked replacement; rewritten text copied. Press Ctrl+V manually.";
 }
 
 async function copyPendingRewrite(): Promise<void> {
@@ -985,6 +1070,30 @@ async function retryPendingRewrite(): Promise<void> {
 
 async function speakHere(): Promise<void> {
   try {
+    const readiness = getInputAssistSpeechReadiness({
+      hasGroqApiKey: Boolean(config.groqApiKey),
+      isRecording,
+      isProcessing,
+    });
+
+    if (readiness === "blocked_missing_api_key") {
+      void logger.warn("input_assist.speak_here.blocked", { reason: readiness });
+      inputAssistWindow.showError("Add your Groq API key before using Speak here.");
+      return;
+    }
+
+    if (readiness === "blocked_processing") {
+      void logger.warn("input_assist.speak_here.blocked", { reason: readiness });
+      inputAssistWindow.showError("Speech-to-text is still processing. Try again after it finishes.");
+      return;
+    }
+
+    if (readiness === "cancel_active_recording") {
+      void logger.info("input_assist.speak_here.cancel_active_recording");
+      inputAssistWindow.showLoading("Stopping current recording...");
+      await cancelRecording();
+    }
+
     const focused = await focusInputAssistTargetForSpeech();
     if (!focused) {
       inputAssistWindow.showError("Could not refocus the input. Click the field and try again.");

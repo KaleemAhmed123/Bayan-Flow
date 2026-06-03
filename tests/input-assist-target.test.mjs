@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { iconPositionForBounds, normalizeInputAssistTarget } from "../dist/input-assist/input-assist-types.js";
+import {
+  shouldPreferClipboardSelectionOverUiaWhole,
+  shouldPreferClipboardWholeOverUiaWhole,
+} from "../dist/input-assist/rewrite-source-selection.js";
+import { getInputAssistSpeechReadiness } from "../dist/input-assist/speech-readiness.js";
 
 test("normalizes valid input assist target", () => {
   const target = normalizeInputAssistTarget({
@@ -43,4 +48,46 @@ test("positions magic icon inside work area", () => {
 
   assert.equal(position.x <= 1024 - 36 - 8, true);
   assert.equal(position.y >= 8, true);
+});
+
+test("prefers real clipboard selections over UIA whole text", () => {
+  const wholeText = "First line\r\nSelected text across\r\nmultiple lines\r\nLast line";
+
+  assert.equal(
+    shouldPreferClipboardSelectionOverUiaWhole("Selected text across\r\nmultiple lines", wholeText),
+    true,
+  );
+  assert.equal(shouldPreferClipboardSelectionOverUiaWhole("Selected", wholeText), true);
+});
+
+test("ignores likely editor current-line clipboard copies", () => {
+  const wholeText = "First line\r\nCurrent line\r\nLast line";
+
+  assert.equal(shouldPreferClipboardSelectionOverUiaWhole("Current line\r\n", wholeText), false);
+  assert.equal(shouldPreferClipboardSelectionOverUiaWhole(wholeText, wholeText), false);
+});
+
+test("prefers fuller clipboard whole input over partial UIA whole text", () => {
+  assert.equal(shouldPreferClipboardWholeOverUiaWhole("Full input text across the actual editor", "Short UIA text"), true);
+  assert.equal(shouldPreferClipboardWholeOverUiaWhole("Short", "Longer UIA input text"), false);
+  assert.equal(shouldPreferClipboardWholeOverUiaWhole("Same text", "Same text"), false);
+});
+
+test("classifies input assist speech readiness", () => {
+  assert.equal(
+    getInputAssistSpeechReadiness({ hasGroqApiKey: false, isRecording: false, isProcessing: false }),
+    "blocked_missing_api_key",
+  );
+  assert.equal(
+    getInputAssistSpeechReadiness({ hasGroqApiKey: true, isRecording: true, isProcessing: true }),
+    "blocked_processing",
+  );
+  assert.equal(
+    getInputAssistSpeechReadiness({ hasGroqApiKey: true, isRecording: true, isProcessing: false }),
+    "cancel_active_recording",
+  );
+  assert.equal(
+    getInputAssistSpeechReadiness({ hasGroqApiKey: true, isRecording: false, isProcessing: false }),
+    "ready",
+  );
 });
