@@ -37,6 +37,7 @@ export class InputAssistWindow {
   private iconAnchor: Rect | null = null;
   private userMovedPanel = false;
   private expectedProgrammaticPosition: { x: number; y: number } | null = null;
+  private ignoreMoveUntil = 0;
 
   constructor(
     private readonly callbacks: {
@@ -127,6 +128,7 @@ export class InputAssistWindow {
     this.iconAnchor = null;
     this.userMovedPanel = false;
     this.expectedProgrammaticPosition = null;
+    this.ignoreMoveUntil = 0;
   }
 
   showMenu(): void {
@@ -135,6 +137,8 @@ export class InputAssistWindow {
     }
 
     this.currentView = "menu";
+    this.userMovedPanel = false;
+    this.expectedProgrammaticPosition = null;
     this.resizeAndPositionWindow(MENU_WIDTH, MENU_HEIGHT);
     this.window.webContents.send("input-assist:state", { view: "menu" });
     this.window.show();
@@ -276,10 +280,14 @@ export class InputAssistWindow {
     }
 
     const bounds = this.window.getBounds();
+    if (Date.now() < this.ignoreMoveUntil) {
+      return;
+    }
+
     if (
       this.expectedProgrammaticPosition &&
-      bounds.x === this.expectedProgrammaticPosition.x &&
-      bounds.y === this.expectedProgrammaticPosition.y
+      Math.abs(bounds.x - this.expectedProgrammaticPosition.x) <= 2 &&
+      Math.abs(bounds.y - this.expectedProgrammaticPosition.y) <= 2
     ) {
       this.expectedProgrammaticPosition = null;
       return;
@@ -450,6 +458,7 @@ export class InputAssistWindow {
     }
 
     this.expectedProgrammaticPosition = { x, y };
+    this.ignoreMoveUntil = Date.now() + 250;
     this.window.setPosition(x, y, false);
   }
 
