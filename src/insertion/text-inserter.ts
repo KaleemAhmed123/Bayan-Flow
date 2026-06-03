@@ -179,6 +179,53 @@ export class TextInserter {
     }
   }
 
+  async replaceWholeTextByClipboard(
+    sourceText: string,
+    replacementText: string,
+    expectedTarget: PasteTarget,
+    context: OperationContext = {},
+  ): Promise<void> {
+    void logger.info("clipboard.replace_whole.start", {
+      ...context,
+      sourceChars: sourceText.length,
+      replacementChars: replacementText.length,
+    });
+    await this.focusTargetWindow(expectedTarget, context);
+    await this.assertActiveTarget(expectedTarget, context);
+
+    const previousText = this.deps.clipboard.readText();
+    const sentinel = createClipboardSentinel();
+
+    try {
+      const currentText = await this.captureWholeInputByClipboard(sentinel, context);
+      if (currentText === null || !textsMatchForReplacement(currentText, sourceText)) {
+        throw new Error("Input text changed before replace.");
+      }
+
+      await this.writeClipboardWithRetry(replacementText, context);
+      await sleep(75);
+      await this.assertActiveTarget(expectedTarget, context);
+      await this.sendPasteShortcut(context);
+      await sleep(PASTE_SETTLE_MS);
+      setTimeout(() => void this.restoreClipboardIfUnchanged(replacementText, previousText, context), this.deps.restoreDelayMs);
+      void logger.info("clipboard.replace_whole.success", { ...context, replacementChars: replacementText.length });
+    } catch (error) {
+      await this.writeClipboardWithRetry(replacementText, context).catch((clipboardError) => {
+        void logger.error("clipboard.copy_after_replace_failed", {
+          ...context,
+          textChars: replacementText.length,
+          error: normalizeError("paste", clipboardError),
+        });
+      });
+      void logger.error("clipboard.replace_whole.failed", {
+        ...context,
+        replacementChars: replacementText.length,
+        error: normalizeError("paste", error),
+      });
+      throw error;
+    }
+  }
+
   private async assertActiveTarget(expectedTarget: PasteTarget | null | undefined, context: OperationContext): Promise<void> {
     if (!expectedTarget) {
       return;
@@ -301,6 +348,18 @@ function matchesTarget(activeTarget: PasteTarget, expectedTarget: PasteTarget): 
 
 function createClipboardSentinel(): string {
   return `__BAYANFLOW_CAPTURE_${Date.now()}_${Math.random().toString(16).slice(2)}__`;
+}
+
+function textsMatchForReplacement(currentText: string, sourceText: string): boolean {
+  if (currentText === sourceText) {
+    return true;
+  }
+
+  return trimTrailingLineEndings(currentText) === trimTrailingLineEndings(sourceText);
+}
+
+function trimTrailingLineEndings(text: string): string {
+  return text.replace(/[\r\n]+$/g, "");
 }
 
 function normalizeWindowRegion(region: unknown): WindowBounds | undefined {

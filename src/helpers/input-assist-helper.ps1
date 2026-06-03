@@ -150,6 +150,10 @@ function Get-WholeText($element) {
   return ""
 }
 
+function Normalize-ComparableText($text) {
+  return ([string]$text) -replace "(\r|\n)+$", ""
+}
+
 function Assert-CachedTarget($targetId) {
   if ([string]::IsNullOrWhiteSpace($targetId) -or $targetId -ne $script:CachedTargetId -or $null -eq $script:CachedElement) {
     throw "Input target changed."
@@ -205,7 +209,7 @@ function Handle-VerifySelection($payload) {
 function Handle-ReplaceWholeText($payload) {
   Assert-CachedTarget ([string]$payload.targetId)
   $current = Get-WholeText $script:CachedElement
-  if ($current -ne [string]$payload.sourceText) {
+  if ((Normalize-ComparableText $current) -ne (Normalize-ComparableText $payload.sourceText)) {
     throw "Input text changed before replace."
   }
 

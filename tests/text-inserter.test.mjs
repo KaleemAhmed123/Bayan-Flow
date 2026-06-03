@@ -188,3 +188,71 @@ test("captureTextFromTargetByClipboard falls back to whole input after refocusin
   assert.deepEqual(source, { scope: "whole", text: "whole input" });
   assert.equal(clipboardText, "previous");
 });
+
+test("replaceWholeTextByClipboard verifies whole input and restores clipboard", async () => {
+  const shortcuts = [];
+  let clipboardText = "previous";
+  let selectedAll = false;
+  const inserter = new TextInserter({
+    clipboard: {
+      readText: () => clipboardText,
+      writeText: (text) => {
+        clipboardText = text;
+      },
+    },
+    keyboard: {
+      pressKey: async (...keys) => {
+        shortcuts.push(keys);
+        if (keys.includes(Key.A)) {
+          selectedAll = true;
+        }
+
+        if (keys.includes(Key.C) && selectedAll) {
+          clipboardText = "whole input\r\n";
+        }
+      },
+      releaseKey: async () => {},
+    },
+    windowProvider: {
+      getActiveWindow: async () => ({ getTitle: async () => "Target", windowHandle: 101 }),
+    },
+    restoreDelayMs: 0,
+  });
+
+  await inserter.replaceWholeTextByClipboard("whole input", "replacement", { title: "Target", handle: 101 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  assert.equal(clipboardText, "previous");
+  assert.equal(shortcuts.some((keys) => keys.includes(Key.A)), true);
+  assert.equal(shortcuts.some((keys) => keys.includes(Key.V)), true);
+});
+
+test("replaceWholeTextByClipboard copies fallback when whole input changed", async () => {
+  let clipboardText = "previous";
+  const inserter = new TextInserter({
+    clipboard: {
+      readText: () => clipboardText,
+      writeText: (text) => {
+        clipboardText = text;
+      },
+    },
+    keyboard: {
+      pressKey: async (...keys) => {
+        if (keys.includes(Key.C)) {
+          clipboardText = "changed input";
+        }
+      },
+      releaseKey: async () => {},
+    },
+    windowProvider: {
+      getActiveWindow: async () => ({ getTitle: async () => "Target", windowHandle: 101 }),
+    },
+    restoreDelayMs: 0,
+  });
+
+  await assert.rejects(
+    () => inserter.replaceWholeTextByClipboard("whole input", "replacement", { title: "Target", handle: 101 }),
+    /Input text changed/,
+  );
+  assert.equal(clipboardText, "replacement");
+});
