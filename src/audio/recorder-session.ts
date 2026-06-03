@@ -1,4 +1,5 @@
 import type { OperationContext } from "../types.js";
+import type { RecorderStopReason } from "./recorder-ipc-payloads.js";
 
 export type RecorderLike = {
   start(context?: OperationContext, limits?: { maxDurationMs: number; maxAudioBytes: number }): Promise<void>;
@@ -12,11 +13,16 @@ export type RecorderSessionSnapshot = {
   isStopping: boolean;
 };
 
+export type RecorderStopResult = {
+  audioPath: string | null;
+  stopReason: RecorderStopReason;
+};
+
 export class RecorderSessionController {
   private activeSessionId: string | null = null;
   private startResolver: ((response: { ok: boolean; error?: string }) => void) | null = null;
-  private stopResolver: ((response: { ok: boolean; audioPath?: string | null; error?: string }) => void) | null = null;
-  private completedStop: { ok: boolean; audioPath?: string | null; error?: string } | null = null;
+  private stopResolver: ((response: { ok: boolean; result?: RecorderStopResult; error?: string }) => void) | null = null;
+  private completedStop: { ok: boolean; result?: RecorderStopResult; error?: string } | null = null;
 
   begin(sessionId: string): void {
     if (this.activeSessionId) {
@@ -42,7 +48,7 @@ export class RecorderSessionController {
     });
   }
 
-  waitForStop(): Promise<string | null> {
+  waitForStop(): Promise<RecorderStopResult> {
     if (this.completedStop) {
       const response = this.completedStop;
       this.completedStop = null;
@@ -51,20 +57,19 @@ export class RecorderSessionController {
         return Promise.reject(new Error(response.error || "Recording failed."));
       }
 
-      return Promise.resolve(response.audioPath || null);
+      return Promise.resolve(response.result || { audioPath: null, stopReason: "unknown" });
     }
 
     return new Promise((resolve, reject) => {
       this.stopResolver = (response) => {
         this.stopResolver = null;
-        const audioPath = response.audioPath || null;
         this.activeSessionId = null;
         if (!response.ok) {
           reject(new Error(response.error || "Recording failed."));
           return;
         }
 
-        resolve(audioPath);
+        resolve(response.result || { audioPath: null, stopReason: "unknown" });
       };
     });
   }
@@ -89,17 +94,17 @@ export class RecorderSessionController {
     return true;
   }
 
-  acceptStop(sessionId: string, audioPath?: string | null): boolean {
+  acceptStop(sessionId: string, result: RecorderStopResult): boolean {
     if (sessionId !== this.activeSessionId) {
       return false;
     }
 
     if (this.stopResolver) {
-      this.stopResolver({ ok: true, audioPath });
+      this.stopResolver({ ok: true, result });
       return true;
     }
 
-    this.completedStop = { ok: true, audioPath };
+    this.completedStop = { ok: true, result };
     return true;
   }
 

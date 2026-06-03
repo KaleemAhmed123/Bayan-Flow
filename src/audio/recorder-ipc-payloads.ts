@@ -9,6 +9,7 @@ export type RecorderStartedPayload = {
 export type RecorderStoppedPayload = {
   sessionId: string;
   audio: ArrayBuffer;
+  stopReason: RecorderStopReason;
 };
 
 export type RecorderErrorPayload = {
@@ -21,6 +22,8 @@ export type RecorderMicTestedPayload = {
   requestId: string;
   message?: string;
 };
+
+export type RecorderStopReason = "manual" | "silence" | "max_duration" | "unknown";
 
 export function validateRecorderStartedPayload(payload: unknown, activeSessionId: string | null): RecorderStartedPayload {
   const value = objectPayload(payload);
@@ -55,7 +58,7 @@ export function validateRecorderStoppedPayload(
     throw new Error("Recording is too large. Try a shorter dictation.");
   }
 
-  return { sessionId, audio: value.audio };
+  return { sessionId, audio: value.audio, stopReason: optionalStopReason(value.stopReason) };
 }
 
 export function validateRecorderErrorPayload(payload: unknown, activeSessionId: string | null): RecorderErrorPayload {
@@ -116,4 +119,16 @@ function optionalMessage(value: unknown, fallback = ""): string {
 
   const trimmed = value.trim();
   return trimmed.slice(0, MAX_MESSAGE_LENGTH) || fallback;
+}
+
+function optionalStopReason(value: unknown): RecorderStopReason {
+  if (value === undefined || value === null) {
+    return "unknown";
+  }
+
+  if (value === "manual" || value === "silence" || value === "max_duration") {
+    return value;
+  }
+
+  return "unknown";
 }

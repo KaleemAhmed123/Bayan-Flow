@@ -7,12 +7,13 @@ import { logger } from "../observability/app-logger.js";
 import { normalizeError } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 import {
+  type RecorderStopReason,
   validateRecorderErrorPayload,
   validateRecorderMicTestedPayload,
   validateRecorderStartedPayload,
   validateRecorderStoppedPayload,
 } from "./recorder-ipc-payloads.js";
-import { RecorderSessionController } from "./recorder-session.js";
+import { RecorderSessionController, type RecorderStopResult } from "./recorder-session.js";
 
 type TestMicResponse = {
   ok: boolean;
@@ -104,7 +105,7 @@ export class AudioRecorder {
 
       try {
         const audioPath = await this.saveAudio(payload.audio);
-        this.session.acceptStop(payload.sessionId, audioPath);
+        this.session.acceptStop(payload.sessionId, { audioPath: audioPath || null, stopReason: payload.stopReason });
       } catch (error) {
         const normalized = normalizeError("recorder", error);
         void logger.error("recorder.save.failed", { sessionId: payload.sessionId, error: normalized });
@@ -212,7 +213,7 @@ export class AudioRecorder {
     return started.finally(() => this.clearStartTimer());
   }
 
-  stop(context: OperationContext = {}): Promise<string | null> {
+  stop(context: OperationContext = {}, reason: RecorderStopReason = "manual"): Promise<RecorderStopResult> {
     if (!this.window) {
       throw new Error("Recorder window is not initialized.");
     }
@@ -228,7 +229,7 @@ export class AudioRecorder {
     }, STOP_TIMEOUT_MS);
 
     void logger.info("recorder.stop", context);
-    this.window?.webContents.send("recorder:stop", { sessionId: context.sessionId });
+    this.window?.webContents.send("recorder:stop", { sessionId: context.sessionId, reason });
 
     return stopped.finally(() => this.clearStopTimer());
   }

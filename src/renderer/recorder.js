@@ -8,6 +8,7 @@ let durationTimer = null;
 let limitFailure = null;
 let audioContext = null;
 let silenceInterval = null;
+let stopReason = "manual";
 
 const SILENCE_AUTO_STOP_MS = 5_000;
 const VOICE_RMS_THRESHOLD = 0.025;
@@ -27,6 +28,7 @@ window.recorderBridge.onStart(async (_event, options) => {
     chunks = [];
     recordedBytes = 0;
     limitFailure = null;
+    stopReason = "manual";
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
     startSilenceMonitor(stream, SILENCE_AUTO_STOP_MS);
@@ -45,6 +47,7 @@ window.recorderBridge.onStart(async (_event, options) => {
     mediaRecorder.addEventListener("stop", async () => {
       const sessionId = activeSessionId;
       const failure = limitFailure;
+      const reason = stopReason;
       const blob = new Blob(chunks, { type: "audio/webm" });
       const buffer = await blob.arrayBuffer();
       stopStream();
@@ -54,7 +57,7 @@ window.recorderBridge.onStart(async (_event, options) => {
         return;
       }
 
-      await window.recorderBridge.stopped({ sessionId, audio: buffer });
+      await window.recorderBridge.stopped({ sessionId, audio: buffer, stopReason: reason });
     });
 
     mediaRecorder.start(1000);
@@ -81,10 +84,12 @@ window.recorderBridge.onStop(async (_event, options) => {
     return;
   }
 
+  stopReason = normalizeStopReason(options?.reason);
+
   if (!mediaRecorder || mediaRecorder.state === "inactive") {
     const sessionId = activeSessionId;
     stopStream();
-    await window.recorderBridge.stopped({ sessionId, audio: new ArrayBuffer(0) });
+    await window.recorderBridge.stopped({ sessionId, audio: new ArrayBuffer(0), stopReason });
     return;
   }
 
@@ -169,12 +174,21 @@ function startSilenceMonitor(inputStream, silenceMs) {
       }
 
       if (Date.now() - lastVoiceAt >= silenceMs) {
+        stopReason = "silence";
         mediaRecorder.stop();
       }
     }, 500);
   } catch {
     stopSilenceMonitor();
   }
+}
+
+function normalizeStopReason(reason) {
+  if (reason === "manual" || reason === "silence" || reason === "max_duration") {
+    return reason;
+  }
+
+  return "manual";
 }
 
 function stopSilenceMonitor() {

@@ -11,8 +11,8 @@ test("recorder session accepts start and stop for active session", async () => {
   await started;
 
   const stopped = session.waitForStop();
-  assert.equal(session.acceptStop("s1", "audio.webm"), true);
-  assert.equal(await stopped, "audio.webm");
+  assert.equal(session.acceptStop("s1", { audioPath: "audio.webm", stopReason: "manual" }), true);
+  assert.deepEqual(await stopped, { audioPath: "audio.webm", stopReason: "manual" });
   assert.equal(session.snapshot().activeSessionId, null);
 });
 
@@ -24,9 +24,9 @@ test("recorder session returns stop result that arrived before waitForStop", asy
   assert.equal(session.acceptStart("s1"), true);
   await started;
 
-  assert.equal(session.acceptStop("s1", "auto-stopped.webm"), true);
+  assert.equal(session.acceptStop("s1", { audioPath: "auto-stopped.webm", stopReason: "silence" }), true);
   assert.equal(session.snapshot().activeSessionId, "s1");
-  assert.equal(await session.waitForStop(), "auto-stopped.webm");
+  assert.deepEqual(await session.waitForStop(), { audioPath: "auto-stopped.webm", stopReason: "silence" });
   assert.equal(session.snapshot().activeSessionId, null);
 });
 
@@ -48,7 +48,7 @@ test("recorder session rejects stale events", async () => {
   session.begin("s1");
 
   assert.equal(session.acceptStart("stale"), false);
-  assert.equal(session.acceptStop("stale", "late.webm"), false);
+  assert.equal(session.acceptStop("stale", { audioPath: "late.webm", stopReason: "manual" }), false);
   assert.equal(session.fail("stale", "late error"), false);
   assert.equal(session.snapshot().activeSessionId, "s1");
 
