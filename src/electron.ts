@@ -14,6 +14,7 @@ export const {
   Menu,
   nativeImage,
   safeStorage,
+  screen,
   shell,
   Tray,
 } = electron;

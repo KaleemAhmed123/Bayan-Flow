@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BrowserWindow, ipcMain } from "./electron.js";
+import { BrowserWindow, ipcMain, screen } from "./electron.js";
 import { logger } from "./observability/app-logger.js";
 import type { StatusMessage } from "./types.js";
 
@@ -57,7 +57,10 @@ export class StatusOverlay {
     void logger.debug("status.show", { status: message.status, messageChars: message.message.length });
 
     this.resizeForMessage(message);
+    this.positionWindow();
+    this.window.setAlwaysOnTop(true, "screen-saver");
     this.window.showInactive();
+    this.window.moveTop();
 
     if (this.hideTimer) {
       clearTimeout(this.hideTimer);
@@ -128,6 +131,32 @@ export class StatusOverlay {
 
     this.window.setSize(message.message.length > 34 ? 392 : 280, 72, false);
   }
+
+  private positionWindow(): void {
+    if (!this.window) {
+      return;
+    }
+
+    const [width, height] = this.window.getSize();
+    const cursor = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursor);
+    const margin = 24;
+    const x = Math.round(display.workArea.x + (display.workArea.width - width) / 2);
+    const y = Math.round(display.workArea.y + margin);
+    this.window.setPosition(
+      clamp(x, display.workArea.x + margin, display.workArea.x + display.workArea.width - width - margin),
+      clamp(y, display.workArea.y + margin, display.workArea.y + display.workArea.height - height - margin),
+      false,
+    );
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (max < min) {
+    return min;
+  }
+
+  return Math.min(max, Math.max(min, value));
 }
 
 function hardenWindow(window: InstanceType<typeof BrowserWindow>): void {
