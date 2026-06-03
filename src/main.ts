@@ -9,35 +9,52 @@ import { ConfigStore } from "./config-store.js";
 import { runDictationPipelineWithProviders } from "./dictation/dictation-pipeline.js";
 import { app, crashReporter, Menu, nativeImage, shell, Tray } from "./electron.js";
 import { HotkeyListener } from "./hotkey/hotkey-listener.js";
+import { InputAssistWindow } from "./input-assist-window.js";
+import { UiaHelperClient } from "./input-assist/uia-helper.js";
 import { TextInserter } from "./insertion/text-inserter.js";
 import { configureLogger, logger } from "./observability/app-logger.js";
 import { normalizeError, type ErrorCategory } from "./observability/errors.js";
 import { sanitize } from "./observability/logger.js";
+import { GroqRewriteProvider } from "./rewrite/groq-rewrite-provider.js";
+import { getRewriteAction, type RewriteActionId } from "./rewrite/rewrite-actions.js";
 import { SettingsWindow } from "./settings-window.js";
 import { StatusOverlay } from "./status-overlay.js";
 import { GroqTranscriptionService } from "./transcription/groq-transcription-service.js";
-import type { AppConfig, DictationResult, OperationContext } from "./types.js";
+import type { AppConfig, DictationResult, OperationContext, RuntimeState } from "./types.js";
 import type { PasteTarget } from "./insertion/text-inserter.js";
+import type { RecorderStopReason } from "./audio/recorder-ipc-payloads.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAX_RECORDING_DURATION_MS = 5 * 60 * 1_000;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const STALE_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+const INPUT_ASSIST_ACTION_TIMEOUT_MS = 60_000;
 
 let tray: InstanceType<typeof Tray> | null = null;
 let config: AppConfig;
 let hotkeyListener: HotkeyListener | null = null;
+let inputAssistHotkeyListener: HotkeyListener | null = null;
 let isRecording = false;
 let isProcessing = false;
+let inputAssistEnabled = false;
+let inputAssistInteractionActive = false;
+let inputAssistActionInFlight = false;
+let inputAssistActionTimer: NodeJS.Timeout | null = null;
 let activeSessionId: string | null = null;
 let activePasteTarget: PasteTarget | null = null;
+let inputAssistOriginPasteTarget: PasteTarget | null = null;
+let inputAssistOriginWindowHandle: number | null = null;
 let recordingLimitTimer: NodeJS.Timeout | null = null;
+let inputAssistPollTimer: NodeJS.Timeout | null = null;
 let hotkeyAvailable = false;
 let lastErrorId = "";
 let lastMicError = "";
 let logDir = "";
 let settingsWindowRef: SettingsWindow | null = null;
 let pendingSecondInstanceNotice = false;
+let lastPasteTargetCaptured = false;
+let lastPasteUsedHandle = false;
+let lastStopReason: RecorderStopReason | "" = "";
 let configStore: ConfigStore;
 let providerCache: {
   apiKey: string;
@@ -45,11 +62,46 @@ let providerCache: {
   cleanupModel: string;
   transcription: GroqTranscriptionService;
   cleanup: GroqCleanupProvider;
+  rewrite: GroqRewriteProvider;
 } | null = null;
+let pendingRewrite: {
+  targetKind: "uia" | "clipboard";
+  sourceText: string;
+  rewrittenText: string;
+  scope: "selection" | "whole";
+  targetId: string | null;
+  pasteTarget: PasteTarget | null;
+  actionId: RewriteActionId;
+  customInstruction?: string;
+  actionLabel: string;
+} | null = null;
+
+type RewriteTextSource = {
+  targetKind: "uia" | "clipboard";
+  scope: "selection" | "whole";
+  text: string;
+  targetId: string | null;
+  pasteTarget: PasteTarget | null;
+};
 
 const recorder = new AudioRecorder();
 const inserter = new TextInserter();
 const statusOverlay = new StatusOverlay();
+const inputAssistHelper = new UiaHelperClient();
+const inputAssistWindow = new InputAssistWindow({
+  onMenuOpened: () => {
+    inputAssistInteractionActive = true;
+    inputAssistWindow.showMenu();
+  },
+  onAction: (actionId, customInstruction) =>
+    runInputAssistAction(`rewrite:${actionId}`, () => runInputAssistRewrite(actionId, customInstruction)),
+  onSpeak: () => runInputAssistAction("speak", () => speakHere()),
+  onReplace: () => runInputAssistAction("replace", () => replacePendingRewrite()),
+  onCopy: () => runInputAssistAction("copy", () => copyPendingRewrite()),
+  onRetry: () => runInputAssistAction("retry", () => retryPendingRewrite()),
+  onCancel: () => closeInputAssistInteraction(),
+  onBlur: () => handleInputAssistWindowBlur(),
+});
 
 app.setName("BayanFlow");
 if (process.platform === "win32") {
@@ -103,6 +155,7 @@ app.whenReady()
       clearRecordingLimitTimer();
       activeSessionId = null;
       activePasteTarget = null;
+      refreshTray();
       const normalized = normalizeError("recorder", error);
       void logger.error("dictation.recording.failed_async", { ...context, error: normalized });
       showStatus("error", formatUserError(normalized.userMessage, normalized.id));
@@ -110,6 +163,7 @@ app.whenReady()
 
     await recorder.init();
     await statusOverlay.init();
+    await inputAssistWindow.init();
 
     const settingsWindow = new SettingsWindow(
       configStore,
@@ -118,7 +172,7 @@ app.whenReady()
         applyLoginItemSettings(config);
         warmDictationProviders(config);
         restartHotkeyListener();
-        createTray(settingsWindow);
+        refreshTray();
         showStatus("idle", "Settings saved");
       },
       () => ({
@@ -147,6 +201,7 @@ app.whenReady()
 
     restartHotkeyListener();
     createTray(settingsWindow);
+    await setInputAssistEnabled(config.inputAssistEnabledOnStartup, { silent: true });
     await showLaunchReadyNotice(settingsWindow);
     if (pendingSecondInstanceNotice) {
       pendingSecondInstanceNotice = false;
@@ -163,9 +218,13 @@ app.whenReady()
 app.on("will-quit", () => {
   void logger.info("app.shutdown.begin");
   hotkeyListener?.stop();
+  inputAssistHotkeyListener?.stop();
   clearRecordingLimitTimer();
+  stopInputAssistPolling();
   recorder.destroy();
   statusOverlay.destroy();
+  inputAssistWindow.destroy();
+  inputAssistHelper.destroy();
 });
 
 process.on("unhandledRejection", (error) => {
@@ -179,13 +238,39 @@ process.on("uncaughtException", (error) => {
 function createTray(settingsWindow: SettingsWindow): void {
   tray?.destroy();
   tray = new Tray(createTrayIcon());
-  tray.setToolTip(createTrayTooltip());
   tray.on("click", () => void settingsWindow.show());
+  updateTrayMenu(settingsWindow);
+}
+
+function refreshTray(): void {
+  const settingsWindow = settingsWindowRef;
+  if (!tray || !settingsWindow) {
+    return;
+  }
+
+  updateTrayMenu(settingsWindow);
+}
+
+function updateTrayMenu(settingsWindow: SettingsWindow): void {
+  if (!tray) {
+    return;
+  }
+
+  const runtimeState = getRuntimeState();
+  tray.setToolTip(createTrayTooltip(runtimeState));
   tray.setContextMenu(
     Menu.buildFromTemplate([
+      { label: `Status: ${formatRuntimeState(runtimeState)}`, enabled: false },
       { label: `Hotkey: ${config.hotkey}`, enabled: false },
+      { label: `Input Assist: ${inputAssistEnabled ? "On" : "Off"} (${config.inputAssistHotkey})`, enabled: false },
       { label: `Hotkey status: ${hotkeyAvailable ? "Active" : "Unavailable"}`, enabled: false },
       { label: `Last error: ${lastErrorId || "None"}`, enabled: false },
+      {
+        label: "Toggle Input Assist",
+        type: "checkbox",
+        checked: inputAssistEnabled,
+        click: () => void setInputAssistEnabled(!inputAssistEnabled),
+      },
       {
         label: "Auto paste after recording",
         type: "checkbox",
@@ -242,26 +327,69 @@ function showTrayBalloon(title: string, content: string): void {
   }
 }
 
-function createTrayTooltip(): string {
+function createTrayTooltip(runtimeState: RuntimeState): string {
   const hotkey = config?.hotkey || "not configured";
-  return `BayanFlow\nRunning in tray\nHotkey: ${hotkey}`;
+  return `BayanFlow\nStatus: ${formatRuntimeState(runtimeState)}\nHotkey: ${hotkey}`;
+}
+
+function getRuntimeState(): RuntimeState {
+  if (isRecording) {
+    return "recording";
+  }
+
+  if (isProcessing) {
+    return "processing";
+  }
+
+  if (inputAssistEnabled) {
+    return "input-assist";
+  }
+
+  if (!config?.groqApiKey) {
+    return "setup";
+  }
+
+  if (!hotkeyAvailable) {
+    return "hotkey-unavailable";
+  }
+
+  if (lastErrorId) {
+    return "error";
+  }
+
+  return "ready";
+}
+
+function formatRuntimeState(state: RuntimeState): string {
+  if (state === "hotkey-unavailable") {
+    return "Hotkey unavailable";
+  }
+
+  return state[0].toUpperCase() + state.slice(1);
 }
 
 function restartHotkeyListener(): void {
   hotkeyListener?.stop();
+  inputAssistHotkeyListener?.stop();
   hotkeyListener = new HotkeyListener(config.hotkey, {
     onPressed: () => void toggleRecording(),
+  });
+  inputAssistHotkeyListener = new HotkeyListener(config.inputAssistHotkey, {
+    onPressed: () => void setInputAssistEnabled(!inputAssistEnabled),
   });
 
   try {
     hotkeyListener.start();
+    inputAssistHotkeyListener.start();
     hotkeyAvailable = true;
+    refreshTray();
   } catch (error) {
     hotkeyAvailable = false;
     const normalized = normalizeError("hotkey", error);
     lastErrorId = normalized.id;
     void logger.error("hotkey.listener.failed", { error: normalized });
     showStatus("error", formatUserError(normalized.userMessage, normalized.id));
+    refreshTray();
   }
 }
 
@@ -279,7 +407,12 @@ async function toggleRecording(): Promise<void> {
 }
 
 async function startRecording(): Promise<void> {
-  if (isRecording || isProcessing) {
+  if (isRecording) {
+    return;
+  }
+
+  if (isProcessing) {
+    showStatus("processing", "Still processing previous recording...");
     return;
   }
 
@@ -293,6 +426,10 @@ async function startRecording(): Promise<void> {
   activeSessionId = createId("session");
   const context = currentContext();
   activePasteTarget = await inserter.captureActiveTarget(context);
+  lastPasteTargetCaptured = Boolean(activePasteTarget);
+  lastPasteUsedHandle = activePasteTarget?.handle !== null && activePasteTarget?.handle !== undefined;
+  lastStopReason = "";
+  refreshTray();
   void logger.info("dictation.start", context);
 
   try {
@@ -303,7 +440,7 @@ async function startRecording(): Promise<void> {
     recordingLimitTimer = setTimeout(() => {
       if (isRecording && !isProcessing) {
         void logger.warn("dictation.recording.max_duration_reached", context);
-        void stopRecording();
+        void stopRecording("max_duration");
       }
     }, MAX_RECORDING_DURATION_MS + 500);
     void waitForRecordingDecision();
@@ -311,6 +448,7 @@ async function startRecording(): Promise<void> {
     isRecording = false;
     activeSessionId = null;
     activePasteTarget = null;
+    refreshTray();
     const normalized = normalizeError("recorder", error);
     lastErrorId = normalized.id;
     lastMicError = normalized.userMessage;
@@ -320,7 +458,7 @@ async function startRecording(): Promise<void> {
 }
 
 async function waitForRecordingDecision(): Promise<void> {
-  const accepted = await statusOverlay.confirm("Listening...");
+  const accepted = await statusOverlay.confirm("Recording - press hotkey again or check to finish");
 
   if (accepted) {
     await stopRecording();
@@ -341,21 +479,23 @@ async function cancelRecording(): Promise<void> {
   showStatus("idle", "Canceled");
   const context = currentContext();
   void logger.info("dictation.cancel", context);
+  refreshTray();
 
-  const audioPath = await recorder.stop(context).catch((error) => {
+  const stopResult = await recorder.stop(context, "manual").catch((error) => {
     void logger.warn("dictation.cancel.stop_failed", { ...context, error: normalizeError("recorder", error) });
     return null;
   });
-  if (audioPath) {
-    await deleteTempAudio(audioPath, context);
+  if (stopResult?.audioPath) {
+    await deleteTempAudio(stopResult.audioPath, context);
   }
 
   isProcessing = false;
   activeSessionId = null;
   activePasteTarget = null;
+  refreshTray();
 }
 
-async function stopRecording(): Promise<void> {
+async function stopRecording(reason: RecorderStopReason = "manual"): Promise<void> {
   if (!isRecording || isProcessing) {
     return;
   }
@@ -364,6 +504,7 @@ async function stopRecording(): Promise<void> {
   isProcessing = true;
   clearRecordingLimitTimer();
   showStatus("processing", "Preparing recording...");
+  refreshTray();
 
   let audioPath: string | null = null;
   let failureCategory: ErrorCategory = "recorder";
@@ -374,11 +515,13 @@ async function stopRecording(): Promise<void> {
   let insertionMs = 0;
 
   try {
-    audioPath = await recorder.stop(context);
+    const stopResult = await recorder.stop(context, reason);
+    audioPath = stopResult.audioPath;
+    lastStopReason = stopResult.stopReason;
     recorderStopMs = Date.now() - latencyStartedAt;
     if (!audioPath) {
-      void logger.info("dictation.no_speech", context);
-      showStatus("idle", "No speech captured");
+      void logger.info("dictation.no_speech", { ...context, stopReason: lastStopReason });
+      showStatus("idle", formatEmptyRecordingMessage(lastStopReason));
       return;
     }
 
@@ -400,6 +543,7 @@ async function stopRecording(): Promise<void> {
     void logger.info("dictation.success", {
       ...context,
       autoPaste: config.autoPaste,
+      stopReason: lastStopReason,
       rawChars: result.rawText.length,
       finalChars: result.finalText.length,
     });
@@ -417,6 +561,7 @@ async function stopRecording(): Promise<void> {
       totalMs: Date.now() - latencyStartedAt,
       cleanupEnabled: config.cleanupEnabled,
       autoPaste: config.autoPaste,
+      stopReason: lastStopReason || reason,
     });
     isProcessing = false;
     if (audioPath) {
@@ -424,6 +569,7 @@ async function stopRecording(): Promise<void> {
     }
     activeSessionId = null;
     activePasteTarget = null;
+    refreshTray();
   }
 }
 
@@ -435,8 +581,13 @@ async function insertOrCopyText(text: string, context: OperationContext, cleanup
   }
 
   showStatus("pasting", "Pasting...");
-  await inserter.pasteText(text, context, activePasteTarget);
-  showStatus("idle", cleanupFallback ? "Pasted raw transcript; review/edit" : "Pasted");
+  try {
+    await inserter.pasteText(text, context, activePasteTarget);
+    showStatus("idle", cleanupFallback ? "Pasted raw transcript; review/edit" : "Pasted");
+  } catch (error) {
+    showStatus("error", "Paste blocked; text copied. Press Ctrl+V manually.");
+    throw error;
+  }
 }
 
 async function toggleAutoPaste(settingsWindow: SettingsWindow): Promise<void> {
@@ -451,9 +602,441 @@ async function toggleAutoPaste(settingsWindow: SettingsWindow): Promise<void> {
     autoPaste: false,
   };
   await configStore.save(config);
-  createTray(settingsWindow);
+  refreshTray();
   showStatus("idle", "Auto paste off");
   void logger.info("settings.auto_paste.toggled", { autoPaste: config.autoPaste });
+}
+
+async function setInputAssistEnabled(enabled: boolean, options: { silent?: boolean } = {}): Promise<void> {
+  if (inputAssistEnabled === enabled) {
+    return;
+  }
+
+  inputAssistEnabled = enabled;
+  inputAssistInteractionActive = false;
+  inputAssistActionInFlight = false;
+  clearInputAssistActionTimer();
+  pendingRewrite = null;
+  if (enabled) {
+    inputAssistOriginPasteTarget = await inserter.captureActiveTarget({ requestId: createId("input-assist-origin") });
+    inputAssistWindow.setContextBounds(inputAssistOriginPasteTarget?.bounds);
+    inputAssistOriginWindowHandle = null;
+    startInputAssistPolling();
+    if (!options.silent) {
+      showStatus("idle", "Input Assist on");
+    }
+    void logger.info("input_assist.enabled");
+  } else {
+    stopInputAssistPolling();
+    inputAssistOriginPasteTarget = null;
+    inputAssistOriginWindowHandle = null;
+    inputAssistWindow.hide();
+    if (!options.silent) {
+      showStatus("idle", "Input Assist off");
+    }
+    void logger.info("input_assist.disabled");
+  }
+
+  refreshTray();
+}
+
+function startInputAssistPolling(): void {
+  stopInputAssistPolling();
+  inputAssistPollTimer = setInterval(() => {
+    void refreshInputAssistTarget();
+  }, 500);
+  void refreshInputAssistTarget();
+}
+
+function stopInputAssistPolling(): void {
+  if (inputAssistPollTimer) {
+    clearInterval(inputAssistPollTimer);
+    inputAssistPollTimer = null;
+  }
+}
+
+async function refreshInputAssistTarget(): Promise<void> {
+  if (!inputAssistEnabled || inputAssistInteractionActive || isRecording || isProcessing) {
+    return;
+  }
+
+  try {
+    const target = await inputAssistHelper.getTarget();
+    if (!target) {
+      inputAssistWindow.showFallbackIcon(inputAssistOriginPasteTarget?.bounds);
+      return;
+    }
+
+    if (shouldDisableInputAssistForWindowChange(target.windowHandle)) {
+      void logger.info("input_assist.auto_disabled", { reason: "target_window_changed" });
+      await setInputAssistEnabled(false);
+      return;
+    }
+
+    inputAssistWindow.showIcon(target);
+  } catch (error) {
+    void logger.debug("input_assist.target.skipped", { error: normalizeError("startup", error) });
+    inputAssistWindow.showFallbackIcon(inputAssistOriginPasteTarget?.bounds);
+  }
+}
+
+async function runInputAssistAction(actionName: string, action: () => Promise<void>): Promise<void> {
+  if (inputAssistActionInFlight) {
+    inputAssistWindow.showLoading("Still working...");
+    void logger.warn("input_assist.action.ignored_busy", { actionName });
+    return;
+  }
+
+  const startedAt = Date.now();
+  inputAssistActionInFlight = true;
+  void logger.info("input_assist.action.start", { actionName });
+  inputAssistActionTimer = setTimeout(() => {
+    if (!inputAssistActionInFlight) {
+      return;
+    }
+
+    inputAssistActionInFlight = false;
+    inputAssistActionTimer = null;
+    pendingRewrite = null;
+    inputAssistWindow.showError("Action timed out. Click the input and try again.");
+    void logger.warn("input_assist.action.timeout", { actionName, timeoutMs: INPUT_ASSIST_ACTION_TIMEOUT_MS });
+    refreshTray();
+  }, INPUT_ASSIST_ACTION_TIMEOUT_MS);
+
+  try {
+    await action();
+    void logger.info("input_assist.action.finish", { actionName, durationMs: Date.now() - startedAt });
+  } catch (error) {
+    void logger.error("input_assist.action.failed", {
+      actionName,
+      durationMs: Date.now() - startedAt,
+      error: normalizeError("startup", error),
+    });
+    throw error;
+  } finally {
+    clearInputAssistActionTimer();
+    inputAssistActionInFlight = false;
+    refreshTray();
+  }
+}
+
+function clearInputAssistActionTimer(): void {
+  if (!inputAssistActionTimer) {
+    return;
+  }
+
+  clearTimeout(inputAssistActionTimer);
+  inputAssistActionTimer = null;
+}
+
+function handleInputAssistWindowBlur(): void {
+  if (!inputAssistEnabled || !inputAssistInteractionActive || inputAssistActionInFlight) {
+    return;
+  }
+
+  void logger.info("input_assist.auto_disabled", { reason: "assist_window_blur" });
+  void setInputAssistEnabled(false);
+}
+
+function shouldDisableInputAssistForWindowChange(windowHandle: number): boolean {
+  if (!isUsableWindowHandle(windowHandle)) {
+    return false;
+  }
+
+  if (inputAssistOriginWindowHandle === null) {
+    inputAssistOriginWindowHandle = windowHandle;
+    return false;
+  }
+
+  return windowHandle !== inputAssistOriginWindowHandle;
+}
+
+function isUsableWindowHandle(windowHandle: number): boolean {
+  return Number.isFinite(windowHandle) && windowHandle > 0;
+}
+
+async function captureInputAssistRewriteSource(): Promise<RewriteTextSource | null> {
+  try {
+    const source = await inputAssistHelper.captureText();
+    if (source) {
+      void logger.info("input_assist.capture.success", {
+        source: "uia",
+        scope: source.scope,
+        textChars: source.text.length,
+        hasTargetId: Boolean(source.target.targetId),
+      });
+      return {
+        targetKind: "uia",
+        scope: source.scope,
+        text: source.text,
+        targetId: source.target.targetId,
+        pasteTarget: null,
+      };
+    }
+  } catch (error) {
+    void logger.debug("input_assist.capture.uia_skipped", { error: normalizeError("startup", error) });
+  }
+
+  if (!inputAssistOriginPasteTarget) {
+    return null;
+  }
+
+  try {
+    const source = await inserter.captureTextFromTargetByClipboard(inputAssistOriginPasteTarget, {
+      requestId: createId("rewrite-capture-fallback"),
+    });
+    if (!source) {
+      return null;
+    }
+
+    void logger.info("input_assist.capture.success", {
+      source: "clipboard",
+      scope: source.scope,
+      textChars: source.text.length,
+      hasPasteTarget: Boolean(inputAssistOriginPasteTarget),
+    });
+    return {
+      targetKind: "clipboard",
+      scope: source.scope,
+      text: source.text,
+      targetId: null,
+      pasteTarget: inputAssistOriginPasteTarget,
+    };
+  } catch (error) {
+    void logger.debug("input_assist.capture.clipboard_skipped", { error: normalizeError("paste", error) });
+    return null;
+  }
+}
+
+async function runInputAssistRewrite(actionId: RewriteActionId, customInstruction?: string): Promise<void> {
+  if (!config.groqApiKey) {
+    inputAssistWindow.showError("Add your Groq API key before using rewrite.");
+    return;
+  }
+
+  inputAssistWindow.showLoading("Preparing selected text...");
+  try {
+    const source = await captureInputAssistRewriteSource();
+    if (!source || !source.text.trim()) {
+      inputAssistWindow.showError("Type or select text first.");
+      return;
+    }
+
+    const action = getRewriteAction(actionId);
+    inputAssistWindow.showLoading(`${action.label}...`);
+    const rewrittenText = await getRewriteProvider(config).rewrite(
+      source.text,
+      { actionId, customInstruction },
+      { requestId: createId("rewrite") },
+    );
+
+    pendingRewrite = {
+      targetKind: source.targetKind,
+      sourceText: source.text,
+      rewrittenText,
+      scope: source.scope,
+      targetId: source.targetId,
+      pasteTarget: source.pasteTarget,
+      actionId,
+      customInstruction,
+      actionLabel: action.label,
+    };
+    inputAssistWindow.showPreview({
+      scope: source.scope,
+      actionLabel: action.label,
+      originalChars: source.text.length,
+      rewrittenText,
+      safeReplace: source.targetKind === "uia" || Boolean(source.pasteTarget),
+      replaceMode: source.targetKind === "uia" ? "verified" : source.pasteTarget ? "window" : "copy",
+    });
+    void logger.info("input_assist.rewrite.preview_ready", {
+      actionId,
+      scope: source.scope,
+      inputChars: source.text.length,
+      outputChars: rewrittenText.length,
+    });
+  } catch (error) {
+    const normalized = normalizeError("cleanup", error);
+    lastErrorId = normalized.id;
+    void logger.error("input_assist.rewrite.failed", { actionId, error: normalized });
+    inputAssistWindow.showError(formatUserError(normalized.userMessage, normalized.id));
+  } finally {
+    refreshTray();
+  }
+}
+
+async function replacePendingRewrite(): Promise<void> {
+  if (!pendingRewrite) {
+    inputAssistWindow.showError("No rewrite preview is ready.");
+    return;
+  }
+
+  if (pendingRewrite.targetKind === "clipboard") {
+    if (!pendingRewrite.pasteTarget) {
+      inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy-unverified") });
+      void logger.warn("input_assist.replace.unverified_copied", {
+        actionId: pendingRewrite.actionId,
+        scope: pendingRewrite.scope,
+        outputChars: pendingRewrite.rewrittenText.length,
+      });
+      closeInputAssistInteraction({ silentDisable: true });
+      showStatus("error", "Could not refocus the input; rewritten text copied. Press Ctrl+V manually.");
+      return;
+    }
+
+    try {
+      const context = { requestId: createId("rewrite-window-paste") };
+      await inserter.focusTargetWindow(pendingRewrite.pasteTarget, context);
+      await inserter.pasteText(pendingRewrite.rewrittenText, context, pendingRewrite.pasteTarget);
+      void logger.info("input_assist.replace.window_paste_success", {
+        actionId: pendingRewrite.actionId,
+        scope: pendingRewrite.scope,
+        outputChars: pendingRewrite.rewrittenText.length,
+      });
+      closeInputAssistInteraction({ silentDisable: true });
+      showStatus("idle", "Pasted");
+      return;
+    } catch (error) {
+      inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy-window-fallback") });
+      const normalized = normalizeError("paste", error);
+      lastErrorId = normalized.id;
+      void logger.error("input_assist.replace.window_paste_fallback_copied", {
+        actionId: pendingRewrite.actionId,
+        scope: pendingRewrite.scope,
+        outputChars: pendingRewrite.rewrittenText.length,
+        error: normalized,
+      });
+      closeInputAssistInteraction({ silentDisable: true });
+      showStatus("error", "Paste blocked; rewritten text copied. Press Ctrl+V manually.");
+      return;
+    }
+  }
+
+  if (!pendingRewrite.targetId) {
+    inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy-unverified") });
+    void logger.warn("input_assist.replace.unverified_copied", {
+      actionId: pendingRewrite.actionId,
+      scope: pendingRewrite.scope,
+      outputChars: pendingRewrite.rewrittenText.length,
+    });
+    closeInputAssistInteraction({ silentDisable: true });
+    showStatus("error", "Input not verified; rewritten text copied. Press Ctrl+V manually.");
+    return;
+  }
+
+  try {
+    if (pendingRewrite.scope === "whole") {
+      await inputAssistHelper.replaceWholeText(
+        pendingRewrite.targetId,
+        pendingRewrite.sourceText,
+        pendingRewrite.rewrittenText,
+      );
+    } else {
+      await inputAssistHelper.verifySelection(pendingRewrite.targetId, pendingRewrite.sourceText);
+      await inserter.pasteText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-paste") }, null);
+    }
+
+    void logger.info("input_assist.replace.success", {
+      actionId: pendingRewrite.actionId,
+      scope: pendingRewrite.scope,
+      outputChars: pendingRewrite.rewrittenText.length,
+    });
+    closeInputAssistInteraction({ silentDisable: true });
+    showStatus("idle", "Replaced");
+  } catch (error) {
+    inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy-fallback") });
+    const normalized = normalizeError("paste", error);
+    lastErrorId = normalized.id;
+    void logger.error("input_assist.replace.fallback_copied", {
+      actionId: pendingRewrite.actionId,
+      scope: pendingRewrite.scope,
+      outputChars: pendingRewrite.rewrittenText.length,
+      error: normalized,
+    });
+    closeInputAssistInteraction({ silentDisable: true });
+    showStatus("error", "Selection changed; rewritten text copied. Press Ctrl+V manually.");
+  }
+}
+
+async function copyPendingRewrite(): Promise<void> {
+  if (!pendingRewrite) {
+    inputAssistWindow.showError("No rewrite preview is ready.");
+    return;
+  }
+
+  inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy") });
+  void logger.info("input_assist.copy.success", {
+    actionId: pendingRewrite.actionId,
+    scope: pendingRewrite.scope,
+    outputChars: pendingRewrite.rewrittenText.length,
+  });
+  closeInputAssistInteraction({ silentDisable: true });
+  showStatus("idle", "Copied");
+}
+
+async function retryPendingRewrite(): Promise<void> {
+  if (!pendingRewrite) {
+    inputAssistWindow.showError("No rewrite preview is ready.");
+    return;
+  }
+
+  await runInputAssistRewrite(pendingRewrite.actionId, pendingRewrite.customInstruction);
+}
+
+async function speakHere(): Promise<void> {
+  try {
+    const focused = await focusInputAssistTargetForSpeech();
+    if (!focused) {
+      inputAssistWindow.showError("Could not refocus the input. Click the field and try again.");
+      return;
+    }
+
+    closeInputAssistInteraction({ silentDisable: true });
+    await startRecording();
+  } catch (error) {
+    const normalized = normalizeError("recorder", error);
+    lastErrorId = normalized.id;
+    void logger.error("input_assist.speak_here.failed", { error: normalized });
+    inputAssistWindow.showError(formatUserError(normalized.userMessage, normalized.id));
+  }
+}
+
+async function focusInputAssistTargetForSpeech(): Promise<boolean> {
+  try {
+    const source = await inputAssistHelper.captureText();
+    if (source) {
+      await inputAssistHelper.focusTarget(source.target.targetId);
+      return true;
+    }
+  } catch (error) {
+    void logger.debug("input_assist.speak_here.uia_focus_skipped", { error: normalizeError("recorder", error) });
+  }
+
+  if (!inputAssistOriginPasteTarget) {
+    return false;
+  }
+
+  try {
+    await inserter.focusTargetWindow(inputAssistOriginPasteTarget, { requestId: createId("speak-here-focus") });
+    return true;
+  } catch (error) {
+    void logger.debug("input_assist.speak_here.window_focus_skipped", { error: normalizeError("paste", error) });
+    return false;
+  }
+}
+
+function closeInputAssistInteraction(options: { keepEnabled?: boolean; silentDisable?: boolean } = {}): void {
+  pendingRewrite = null;
+  inputAssistInteractionActive = false;
+  inputAssistWindow.hide();
+  if (!options.keepEnabled && inputAssistEnabled) {
+    void setInputAssistEnabled(false, { silent: options.silentDisable === true });
+    return;
+  }
+
+  if (inputAssistEnabled) {
+    void refreshInputAssistTarget();
+  }
 }
 
 async function runDictationPipeline(audioPath: string, context: OperationContext): Promise<DictationResult> {
@@ -499,6 +1082,7 @@ function warmDictationProviders(nextConfig: AppConfig): void {
 function getDictationProviders(nextConfig: AppConfig): {
   transcription: GroqTranscriptionService;
   cleanup: GroqCleanupProvider;
+  rewrite: GroqRewriteProvider;
 } {
   if (
     providerCache &&
@@ -515,6 +1099,7 @@ function getDictationProviders(nextConfig: AppConfig): {
     cleanupModel: nextConfig.cleanupModel,
     transcription: new GroqTranscriptionService(nextConfig.groqApiKey, nextConfig.transcriptionModel),
     cleanup: new GroqCleanupProvider(nextConfig.groqApiKey, nextConfig.cleanupModel),
+    rewrite: new GroqRewriteProvider(nextConfig.groqApiKey, nextConfig.cleanupModel),
   };
   void logger.info("dictation.providers.ready", {
     transcriptionModel: nextConfig.transcriptionModel,
@@ -522,6 +1107,10 @@ function getDictationProviders(nextConfig: AppConfig): {
     cleanupEnabled: nextConfig.cleanupEnabled,
   });
   return providerCache;
+}
+
+function getRewriteProvider(nextConfig: AppConfig): GroqRewriteProvider {
+  return getDictationProviders(nextConfig).rewrite;
 }
 
 function showStatus(status: "idle" | "listening" | "processing" | "confirm" | "pasting" | "error", message: string): void {
@@ -560,10 +1149,25 @@ async function exportDiagnostics(): Promise<void> {
     },
     hotkey: {
       configured: config.hotkey,
+      inputAssistConfigured: config.inputAssistHotkey,
       available: hotkeyAvailable,
     },
     mic: {
       lastError: lastMicError || "",
+    },
+    paste: {
+      lastTargetCaptured: lastPasteTargetCaptured,
+      lastTargetUsedHandle: lastPasteUsedHandle,
+    },
+    recording: {
+      active: isRecording,
+      processing: isProcessing,
+      lastStopReason,
+    },
+    inputAssist: {
+      enabled: inputAssistEnabled,
+      interactionActive: inputAssistInteractionActive,
+      hasPendingRewrite: Boolean(pendingRewrite),
     },
     lastErrorId,
     settings: {
@@ -571,6 +1175,7 @@ async function exportDiagnostics(): Promise<void> {
       autoPaste: config.autoPaste,
       cleanupEnabled: config.cleanupEnabled,
       openAtLogin: config.openAtLogin,
+      inputAssistEnabledOnStartup: config.inputAssistEnabledOnStartup,
       transcriptionModel: config.transcriptionModel,
       cleanupModel: config.cleanupModel,
     },
@@ -683,6 +1288,18 @@ function applyLoginItemSettings(nextConfig: AppConfig): void {
 
 function formatUserError(message: string, id: string): string {
   return `${message} (${id})`;
+}
+
+function formatEmptyRecordingMessage(reason: RecorderStopReason): string {
+  if (reason === "silence") {
+    return "Stopped after silence; no speech captured";
+  }
+
+  if (reason === "max_duration") {
+    return "Recording limit reached; no speech captured";
+  }
+
+  return "No speech captured";
 }
 
 function writeEarlyStartupDiagnostic(event: string): void {
