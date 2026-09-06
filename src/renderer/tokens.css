@@ -1,0 +1,93 @@
+/*
+ * BayanFlow design tokens — "Ink & Iris".
+ *
+ * Single source of truth for colour, type, radius, and motion.
+ * Imported by dock.css and settings.css. Do not redefine these values anywhere else.
+ *
+ * The palette is a near-black neutral base with one violet accent. The base is
+ * deliberately desaturated so the dock reads as a system surface rather than an
+ * app window, and stays legible floating over both light and dark host apps.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest to lightest. */
+  --bf-bg-app: #0a0b0f;
+  --bf-bg-sunken: #07080b;
+  --bf-bg-raised: #14161c;
+  --bf-bg-input: #0c0e13;
+  --bf-bg-hover: rgba(255, 255, 255, 0.07);
+  --bf-bg-active: rgba(255, 255, 255, 0.12);
+
+  /* The floating dock. Slightly translucent so it sits in the desktop, not on it. */
+  --bf-glass: rgba(12, 13, 18, 0.88);
+  --bf-glass-solid: #0c0d12;
+
+  /* Lines. Top edge catches a little light, like a real raised surface. */
+  --bf-line: rgba(255, 255, 255, 0.08);
+  --bf-line-strong: rgba(255, 255, 255, 0.14);
+  --bf-line-highlight: rgba(255, 255, 255, 0.22);
+
+  /* Text. Warm white reads softer than pure #fff against near-black. */
+  --bf-text: #eceef2;
+  --bf-text-muted: #8e92a3;
+  --bf-text-faint: #5d6172;
+
+  /* One accent. Resist adding a second. */
+  --bf-accent: #7c6aff;
+  --bf-accent-hover: #8f80ff;
+  --bf-accent-quiet: rgba(124, 106, 255, 0.16);
+  --bf-accent-text: #ffffff;
+
+  /* State colours. Dots, rails, and badges only — never large fills. */
+  --bf-live: #3ddc97;
+  --bf-live-quiet: rgba(61, 220, 151, 0.18);
+  --bf-busy: #5cc8ff;
+  --bf-busy-quiet: rgba(92, 200, 255, 0.16);
+  --bf-danger: #ff6b6b;
+  --bf-danger-quiet: rgba(255, 107, 107, 0.14);
+  --bf-offline: #5d6172;
+
+  /* Type. Segoe UI is the Windows system face; no webfont, so nothing to load. */
+  --bf-font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --bf-size-xs: 11px;
+  --bf-size-sm: 12px;
+  --bf-size-md: 13px;
+  --bf-size-lg: 15px;
+  --bf-size-xl: 20px;
+
+  /* Space. 4px base. */
+  --bf-space-1: 4px;
+  --bf-space-2: 8px;
+  --bf-space-3: 12px;
+  --bf-space-4: 16px;
+  --bf-space-5: 24px;
+  --bf-space-6: 32px;
+
+  /* Radius. */
+  --bf-radius-sm: 8px;
+  --bf-radius-md: 12px;
+  --bf-radius-lg: 16px;
+  --bf-radius-pill: 999px;
+
+  /* Elevation. Kept tight: the dock window is sized to the card, so a wide
+     shadow would be clipped by the window edge. */
+  --bf-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --bf-shadow-pill: 0 4px 16px rgba(0, 0, 0, 0.5);
+
+  /* Motion. */
+  --bf-fast: 120ms;
+  --bf-base: 200ms;
+  --bf-ease: cubic-bezier(0.2, 0, 0.1, 1);
+
+  /* Minimum comfortable hit target. Every clickable control honours this. */
+  --bf-hit: 32px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --bf-fast: 0ms;
+    --bf-base: 0ms;
+  }
+}
