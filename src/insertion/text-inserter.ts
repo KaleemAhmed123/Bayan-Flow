@@ -179,6 +179,26 @@ export class TextInserter {
     }
   }
 
+  /**
+   * Sends Ctrl+Z to the target so a fresh paste replaces the previous one.
+   *
+   * Chromium text controls treat a paste as a single undo unit, which covers
+   * VS Code, Brave, WhatsApp, and Notion. Terminals have no undo stack, so there
+   * the new text lands after the old and the caller tells the user.
+   *
+   * ponytail: single undo step, matches a single paste. If a future insertion
+   * path ever writes more than one undo unit, count them and undo that many.
+   */
+  async sendUndo(context: OperationContext = {}, expectedTarget?: PasteTarget | null): Promise<void> {
+    if (expectedTarget) {
+      await this.focusTargetWindow(expectedTarget, context);
+    }
+
+    await this.sendKeyboardShortcut([Key.LeftControl, Key.Z], context, "undo");
+    await sleep(PASTE_SETTLE_MS);
+    void logger.info("clipboard.undo.sent", context);
+  }
+
   async replaceWholeTextByClipboard(
     sourceText: string,
     replacementText: string,
