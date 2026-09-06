@@ -4,17 +4,15 @@ const fields = {
   inputAssistHotkey: document.getElementById("inputAssistHotkey"),
   transcriptionModel: document.getElementById("transcriptionModel"),
   cleanupModel: document.getElementById("cleanupModel"),
+  showDock: document.getElementById("showDock"),
   autoPaste: document.getElementById("autoPaste"),
-  autoPasteConfirmed: document.getElementById("autoPasteConfirmed"),
   cleanupEnabled: document.getElementById("cleanupEnabled"),
-  inputAssistEnabledOnStartup: document.getElementById("inputAssistEnabledOnStartup"),
   openAtLogin: document.getElementById("openAtLogin"),
 };
 
-const status = document.getElementById("status");
+const statusLine = document.getElementById("status");
 const health = document.getElementById("health");
 const setupChecklist = document.getElementById("setupChecklist");
-const autoPasteWarning = document.getElementById("autoPasteWarning");
 const setupNotice = document.getElementById("setupNotice");
 const API_KEY_MASK = "********";
 
@@ -25,50 +23,19 @@ window.settingsBridge.load().then((config) => {
   fields.inputAssistHotkey.value = config.inputAssistHotkey;
   fields.transcriptionModel.value = config.transcriptionModel;
   fields.cleanupModel.value = config.cleanupModel;
+  fields.showDock.checked = config.showDock;
   fields.autoPaste.checked = config.autoPaste;
   fields.cleanupEnabled.checked = config.cleanupEnabled;
-  fields.inputAssistEnabledOnStartup.checked = config.inputAssistEnabledOnStartup;
   fields.openAtLogin.checked = config.openAtLogin;
-  fields.autoPasteConfirmed.checked = config.autoPaste;
-  updateAutoPasteWarning();
 
-  setupNotice.hidden = localHealth.hasGroqApiKey;
+  setupNotice.hidden = Boolean(localHealth.hasGroqApiKey);
   renderSetupChecklist(config, localHealth);
-  health.innerHTML = "";
-  for (const [label, value] of [
-    ["API key", localHealth.hasGroqApiKey ? "Present" : "Missing"],
-    ["Hotkey", localHealth.hotkeyAvailable ? "Active" : "Unavailable"],
-    ["Input Assist", config.inputAssistEnabledOnStartup ? "Starts enabled" : "Manual"],
-    ["Paste mode", localHealth.pasteMode === "auto" ? "Auto paste" : "Copy only"],
-    ["Last mic error", localHealth.lastMicError || "None"],
-    ["Last error", localHealth.lastErrorId || "None"],
-    ["Logs", localHealth.logDir || "Not initialized"],
-  ]) {
-    const item = document.createElement("li");
-    item.dataset.state = resolveHealthState(label, value);
-
-    const name = document.createElement("span");
-    name.className = "health-label";
-    name.textContent = label;
-
-    const state = document.createElement("strong");
-    state.className = "health-value";
-    state.textContent = value;
-
-    item.append(name, state);
-    health.append(item);
-  }
+  renderHealth(config, localHealth);
 });
 
 document.getElementById("save").addEventListener("click", async () => {
   const save = document.getElementById("save");
-  setStatus("Saving settings...", "info");
-
-  if (fields.autoPaste.checked && !fields.autoPasteConfirmed.checked) {
-    setStatus("Review and confirm the auto-paste warning", "error");
-    return;
-  }
-
+  setStatus("Saving...", "info");
   save.disabled = true;
 
   try {
@@ -78,17 +45,22 @@ document.getElementById("save").addEventListener("click", async () => {
       hotkey: fields.hotkey.value.trim() || "Ctrl+Shift+Space",
       inputAssistHotkey: fields.inputAssistHotkey.value.trim() || "Ctrl+Shift+Enter",
       transcriptionModel: fields.transcriptionModel.value.trim() || "whisper-large-v3",
-      cleanupModel: fields.cleanupModel.value.trim() || "llama-3.3-70b-versatile",
+      cleanupModel: fields.cleanupModel.value.trim() || "openai/gpt-oss-120b",
+      showDock: fields.showDock.checked,
       autoPaste: fields.autoPaste.checked,
       cleanupEnabled: fields.cleanupEnabled.checked,
-      inputAssistEnabledOnStartup: fields.inputAssistEnabledOnStartup.checked,
       openAtLogin: fields.openAtLogin.checked,
     });
     setApiKeyMasked(Boolean(saved?.health?.hasGroqApiKey || submittedApiKey));
     setupNotice.hidden = true;
-    setStatus("Settings saved. BayanFlow is ready.", "success");
+    if (saved) {
+      renderSetupChecklist(saved, saved.health || {});
+      renderHealth(saved, saved.health || {});
+    }
+
+    setStatus("Saved. BayanFlow is ready.", "success");
   } catch (error) {
-    setStatus(error?.message || "Could not save settings. Check the key, hotkey, and model names.", "error");
+    setStatus(error?.message || "Could not save. Check the key, hotkeys, and model names.", "error");
   } finally {
     save.disabled = false;
   }
@@ -103,7 +75,10 @@ document.getElementById("testMic").addEventListener("click", async () => {
     await window.settingsBridge.testMicrophone();
     setStatus("Microphone is ready.", "success");
   } catch {
-    setStatus("Microphone test failed. Check Windows microphone permission and selected input device.", "error");
+    setStatus(
+      "Microphone test failed. Open Windows Settings, Privacy & security, Microphone, and allow desktop apps.",
+      "error",
+    );
   } finally {
     button.disabled = false;
   }
@@ -121,53 +96,38 @@ fields.groqApiKey.addEventListener("input", () => {
   }
 });
 
-fields.autoPaste.addEventListener("change", () => {
-  if (!fields.autoPaste.checked) {
-    fields.autoPasteConfirmed.checked = false;
-  }
-
-  updateAutoPasteWarning();
-});
-
-function updateAutoPasteWarning() {
-  autoPasteWarning.hidden = !fields.autoPaste.checked;
-}
-
 function renderSetupChecklist(config, localHealth) {
-  setupChecklist.innerHTML = "";
-  for (const item of [
+  const items = [
     {
       done: Boolean(localHealth.hasGroqApiKey),
-      title: "Add Groq API key",
-      copy: "Required before any dictation can be transcribed.",
+      title: "Add your Groq API key",
+      copy: "Create one in the Groq console, paste it above, then save.",
     },
     {
       done: !localHealth.lastMicError,
-      title: "Test microphone",
-      copy: "Use the button at the top before your first real recording.",
+      title: "Test the microphone",
+      copy: "Use the button at the top right before your first real recording.",
     },
     {
       done: Boolean(localHealth.hotkeyAvailable),
-      title: "Confirm hotkey is active",
-      copy: `Current hotkey: ${config.hotkey || "Ctrl+Shift+Space"}. Press it once to start and again to finish.`,
+      title: "Try the dictation hotkey",
+      copy: `Hold ${config.hotkey || "Ctrl+Shift+Space"} in Notepad, say one sentence, release.`,
     },
     {
       done: Boolean(config.inputAssistHotkey),
-      title: "Know the Input Assist hotkey",
-      copy: `Current Input Assist hotkey: ${config.inputAssistHotkey || "Ctrl+Shift+Enter"}. Use it to toggle the floating magic icon.`,
+      title: "Try the rewrite hotkey",
+      copy: `Type a rough sentence, press ${config.inputAssistHotkey || "Ctrl+Shift+Enter"}, pick Polish.`,
     },
-    {
-      done: true,
-      title: config.autoPaste ? "Auto-paste enabled" : "Copy-only mode selected",
-      copy: config.autoPaste ? "BayanFlow will paste into the original target when Windows allows it." : "Safer default: text is copied and ready for Ctrl+V.",
-    },
-  ]) {
+  ];
+
+  setupChecklist.replaceChildren();
+  for (const item of items) {
     const row = document.createElement("li");
     row.dataset.state = item.done ? "done" : "todo";
 
     const icon = document.createElement("span");
     icon.className = "check-icon";
-    icon.textContent = item.done ? "OK" : "!";
+    icon.textContent = item.done ? "✓" : "!";
 
     const copy = document.createElement("span");
     const title = document.createElement("span");
@@ -180,6 +140,40 @@ function renderSetupChecklist(config, localHealth) {
 
     row.append(icon, copy);
     setupChecklist.append(row);
+  }
+}
+
+function renderHealth(config, localHealth) {
+  const rows = [
+    ["API key", localHealth.hasGroqApiKey ? "Present" : "Missing", localHealth.hasGroqApiKey ? "good" : "warning"],
+    ["Hotkeys", localHealth.hotkeyAvailable ? "Active" : "Unavailable", localHealth.hotkeyAvailable ? "good" : "warning"],
+    [
+      "Insertion",
+      localHealth.pasteMode === "auto" ? "Paste into app" : "Copy only",
+      localHealth.pasteMode === "auto" ? "good" : "neutral",
+    ],
+    ["Polish", config.cleanupEnabled ? "On" : "Off", config.cleanupEnabled ? "good" : "neutral"],
+    ["Pill", config.showDock ? "On screen" : "Hidden", config.showDock ? "good" : "neutral"],
+    ["Last mic error", localHealth.lastMicError || "None", localHealth.lastMicError ? "error" : "good"],
+    ["Last error", localHealth.lastErrorId || "None", localHealth.lastErrorId ? "error" : "good"],
+    ["Logs", localHealth.logDir || "Not initialized", "neutral"],
+  ];
+
+  health.replaceChildren();
+  for (const [label, value, state] of rows) {
+    const item = document.createElement("li");
+    item.dataset.state = state;
+
+    const name = document.createElement("span");
+    name.className = "health-label";
+    name.textContent = label;
+
+    const valueNode = document.createElement("strong");
+    valueNode.className = "health-value";
+    valueNode.textContent = value;
+
+    item.append(name, valueNode);
+    health.append(item);
   }
 }
 
@@ -198,31 +192,11 @@ function getApiKeyValueForSave() {
 }
 
 function setStatus(message, state) {
-  status.textContent = message;
+  statusLine.textContent = message;
   if (state) {
-    status.dataset.state = state;
+    statusLine.dataset.state = state;
     return;
   }
 
-  delete status.dataset.state;
-}
-
-function resolveHealthState(label, value) {
-  if ((label === "API key" || label === "Hotkey") && value !== "Present" && value !== "Active") {
-    return "warning";
-  }
-
-  if ((label === "Last mic error" || label === "Last error") && value !== "None") {
-    return "error";
-  }
-
-  if (label === "Paste mode" && value === "Auto paste") {
-    return "warning";
-  }
-
-  if (label === "Input Assist") {
-    return "good";
-  }
-
-  return "good";
+  delete statusLine.dataset.state;
 }
