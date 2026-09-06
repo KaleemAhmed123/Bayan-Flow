@@ -4,7 +4,8 @@ import { matchesGlobalKey, toUiohookHotkey } from "./hotkey-parser.js";
 
 type HotkeyCallbacks = {
   onPressed: () => void;
-  onReleased?: () => void;
+  /** `heldMs` lets the caller tell a tap (latch) from a hold (push-to-talk). */
+  onReleased?: (heldMs: number) => void;
 };
 
 export type KeyboardHookLike = {
@@ -24,6 +25,7 @@ export class HotkeyListener {
   private readonly hotkey: ReturnType<typeof toUiohookHotkey>;
   private isPressed = false;
   private isStarted = false;
+  private pressedAt = 0;
 
   constructor(
     hotkey: string,
@@ -60,6 +62,7 @@ export class HotkeyListener {
 
     if (!this.isPressed && matchesGlobalKey(eventName, this.hotkey.key) && this.areModifiersDown(event)) {
       this.isPressed = true;
+      this.pressedAt = Date.now();
       this.callbacks.onPressed();
     }
   };
@@ -68,8 +71,10 @@ export class HotkeyListener {
     const eventName = getEventKeyName(event);
 
     if (this.isPressed && this.isComboKey(eventName)) {
+      const heldMs = this.pressedAt ? Date.now() - this.pressedAt : 0;
       this.isPressed = false;
-      this.callbacks.onReleased?.();
+      this.pressedAt = 0;
+      this.callbacks.onReleased?.(heldMs);
     }
   };
 

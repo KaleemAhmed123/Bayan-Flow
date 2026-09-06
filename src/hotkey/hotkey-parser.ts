@@ -3,6 +3,20 @@ type ParsedHotkey = {
   modifiers: string[];
 };
 
+/**
+ * Below this, a press counts as a tap (latch recording on).
+ * At or above it, a press counts as a hold (push-to-talk, release finishes).
+ * 400ms is the Discord push-to-talk convention; long enough that a deliberate
+ * tap never registers as a hold, short enough that holding feels instant.
+ */
+export const HOLD_THRESHOLD_MS = 400;
+
+export type PressKind = "tap" | "hold";
+
+export function classifyPress(heldMs: number, thresholdMs: number = HOLD_THRESHOLD_MS): PressKind {
+  return Number.isFinite(heldMs) && heldMs >= thresholdMs ? "hold" : "tap";
+}
+
 type GlobalKeyHotkey = {
   key: string;
   modifiers: string[];
