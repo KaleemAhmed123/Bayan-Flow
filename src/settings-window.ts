@@ -51,10 +51,7 @@ export class SettingsWindow {
       const nextConfig = normalizeConfig({
         ...config,
         groqApiKey: config.groqApiKey?.trim() ? config.groqApiKey : existingConfig.groqApiKey,
-        inputAssistEnabledOnStartup:
-          typeof config.inputAssistEnabledOnStartup === "boolean"
-            ? config.inputAssistEnabledOnStartup
-            : existingConfig.inputAssistEnabledOnStartup,
+        showDock: typeof config.showDock === "boolean" ? config.showDock : existingConfig.showDock,
         openAtLogin: typeof config.openAtLogin === "boolean" ? config.openAtLogin : existingConfig.openAtLogin,
       });
       await this.configStore.save(nextConfig);
@@ -63,7 +60,7 @@ export class SettingsWindow {
         hasGroqApiKey: Boolean(nextConfig.groqApiKey),
         hotkey: nextConfig.hotkey,
         inputAssistHotkey: nextConfig.inputAssistHotkey,
-        inputAssistEnabledOnStartup: nextConfig.inputAssistEnabledOnStartup,
+        showDock: nextConfig.showDock,
         autoPaste: nextConfig.autoPaste,
         cleanupEnabled: nextConfig.cleanupEnabled,
         openAtLogin: nextConfig.openAtLogin,
@@ -88,7 +85,7 @@ export class SettingsWindow {
       resizable: true,
       title: "BayanFlow Settings",
       icon: path.join(__dirname, "assets", "tray-icon.ico"),
-      backgroundColor: "#eef2f6",
+      backgroundColor: "#0a0b0f",
       webPreferences: {
         preload: path.join(__dirname, "renderer", "settings-preload.js"),
         contextIsolation: true,

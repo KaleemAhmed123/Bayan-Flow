@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-for (const file of ["input-assist.html", "recorder.html", "settings.html", "status.html"]) {
+for (const file of ["dock.html", "recorder.html", "settings.html"]) {
   test(`${file} uses external renderer assets and strict CSP`, async () => {
     const html = await readFile(path.join("src", "renderer", file), "utf8");
     assert.equal(html.includes("unsafe-inline"), false);
@@ -12,13 +12,51 @@ for (const file of ["input-assist.html", "recorder.html", "settings.html", "stat
   });
 }
 
-test("input assist css preserves hidden state above display utilities", async () => {
-  const css = await readFile(path.join("src", "renderer", "input-assist.css"), "utf8");
+test("dock css preserves hidden state above display utilities", async () => {
+  const css = await readFile(path.join("src", "renderer", "dock.css"), "utf8");
   assert.match(css, /\[hidden\]\s*{[^}]*display:\s*none\s*!important;[^}]*}/s);
 });
 
-test("input assist panel is draggable without stealing control clicks", async () => {
-  const css = await readFile(path.join("src", "renderer", "input-assist.css"), "utf8");
-  assert.match(css, /\.panel\s*{[^}]*-webkit-app-region:\s*drag;[^}]*}/s);
-  assert.match(css, /button,\s*[\r\n]+input,\s*[\r\n]+textarea,[^}]*-webkit-app-region:\s*no-drag;[^}]*}/s);
+test("dock and settings both build on the shared token file", async () => {
+  for (const file of ["dock.html", "settings.html"]) {
+    const html = await readFile(path.join("src", "renderer", file), "utf8");
+    assert.match(html, /href="\.\/tokens\.css"/);
+  }
+});
+
+test("the dock size has exactly one owner", async () => {
+  // The defect this guards against: the old status overlay set its window size in
+  // TypeScript while CSS sized the card independently, and the two disagreed in
+  // every state (worst case a 156px card inside a 304px window).
+  //
+  // The rule now is that CSS owns the size, the renderer measures it, and the
+  // main process only positions what it is told. So overlay-dock.ts must resize
+  // from the measured value and from nothing else.
+  const dockSource = await readFile(path.join("src", "overlay", "overlay-dock.ts"), "utf8");
+
+  // applyBounds may call setBounds more than once (snap vs animated tween), but
+  // no other method may touch geometry at all.
+  const start = dockSource.indexOf("private applyBounds(");
+  const end = dockSource.indexOf("private stopTween(");
+  assert.ok(start > -1 && end > start, "expected applyBounds followed by stopTween");
+
+  const applyBounds = dockSource.slice(start, end);
+  const total = (dockSource.match(/\.setBounds\(/g) ?? []).length;
+  const inside = (applyBounds.match(/\.setBounds\(/g) ?? []).length;
+
+  assert.ok(total > 0, "the dock must position itself somewhere");
+  assert.equal(inside, total, "every setBounds call must live inside applyBounds");
+  assert.match(dockSource, /clampDockSize\(this\.lastSize, workArea\)/, "size must come from the measured value");
+  assert.equal(/\.setSize\(/.test(dockSource), false, "no second sizing path");
+
+  // CSS is the owner, so it is the one place a pixel width may appear.
+  const css = await readFile(path.join("src", "renderer", "dock.css"), "utf8");
+  assert.match(/\.dock\s*{([^}]*)}/s.exec(css)?.[1] ?? "", /width:\s*\d+px/);
+});
+
+test("the dock reports its own measured size to the main process", async () => {
+  const js = await readFile(path.join("src", "renderer", "dock.js"), "utf8");
+  assert.match(js, /getBoundingClientRect\(\)/);
+  assert.match(js, /reportSize\(\{ width, height \}\)/);
+  assert.match(js, /new ResizeObserver\(/);
 });

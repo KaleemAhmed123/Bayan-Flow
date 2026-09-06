@@ -9,21 +9,27 @@ import { ConfigStore } from "./config-store.js";
 import { runDictationPipelineWithProviders } from "./dictation/dictation-pipeline.js";
 import { app, crashReporter, Menu, nativeImage, shell, Tray } from "./electron.js";
 import { HotkeyListener } from "./hotkey/hotkey-listener.js";
-import { InputAssistWindow } from "./input-assist-window.js";
-import {
-  shouldPreferClipboardSelectionOverUiaWhole,
-  shouldPreferClipboardWholeOverUiaWhole,
-} from "./input-assist/rewrite-source-selection.js";
-import { getInputAssistSpeechReadiness } from "./input-assist/speech-readiness.js";
-import { UiaHelperClient } from "./input-assist/uia-helper.js";
+import { classifyPress } from "./hotkey/hotkey-parser.js";
 import { TextInserter } from "./insertion/text-inserter.js";
 import { configureLogger, logger } from "./observability/app-logger.js";
-import { normalizeError, type ErrorCategory } from "./observability/errors.js";
+import { normalizeError, type ErrorCategory, type NormalizedError } from "./observability/errors.js";
 import { sanitize } from "./observability/logger.js";
+import { OverlayDock } from "./overlay/overlay-dock.js";
+import {
+  DOCK_SNOOZE_MS,
+  recoveryForFailure,
+  type DockFailure,
+  type DockRecoveryAction,
+} from "./overlay/overlay-state.js";
 import { GroqRewriteProvider } from "./rewrite/groq-rewrite-provider.js";
-import { getRewriteAction, type RewriteActionId } from "./rewrite/rewrite-actions.js";
+import {
+  buildRedoInstruction,
+  getDockMenuActions,
+  getRewriteAction,
+  isRewriteActionId,
+  type RewriteActionId,
+} from "./rewrite/rewrite-actions.js";
 import { SettingsWindow } from "./settings-window.js";
-import { StatusOverlay } from "./status-overlay.js";
 import { GroqTranscriptionService } from "./transcription/groq-transcription-service.js";
 import type { AppConfig, DictationResult, OperationContext, RuntimeState } from "./types.js";
 import type { PasteTarget } from "./insertion/text-inserter.js";
@@ -33,24 +39,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAX_RECORDING_DURATION_MS = 5 * 60 * 1_000;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const STALE_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
-const INPUT_ASSIST_ACTION_TIMEOUT_MS = 60_000;
 
 let tray: InstanceType<typeof Tray> | null = null;
 let config: AppConfig;
 let hotkeyListener: HotkeyListener | null = null;
-let inputAssistHotkeyListener: HotkeyListener | null = null;
+let rewriteHotkeyListener: HotkeyListener | null = null;
+let cancelHotkeyListener: HotkeyListener | null = null;
 let isRecording = false;
 let isProcessing = false;
-let inputAssistEnabled = false;
-let inputAssistInteractionActive = false;
-let inputAssistActionInFlight = false;
-let inputAssistActionTimer: NodeJS.Timeout | null = null;
+let isLatched = false;
+let rewriteInFlight = false;
 let activeSessionId: string | null = null;
 let activePasteTarget: PasteTarget | null = null;
-let inputAssistOriginPasteTarget: PasteTarget | null = null;
-let inputAssistOriginWindowHandle: number | null = null;
+let rewriteTarget: PasteTarget | null = null;
 let recordingLimitTimer: NodeJS.Timeout | null = null;
-let inputAssistPollTimer: NodeJS.Timeout | null = null;
 let hotkeyAvailable = false;
 let lastErrorId = "";
 let lastMicError = "";
@@ -61,6 +63,26 @@ let lastPasteTargetCaptured = false;
 let lastPasteUsedHandle = false;
 let lastStopReason: RecorderStopReason | "" = "";
 let configStore: ConfigStore;
+
+/** Retry closure for the dock's "Try again" recovery button. */
+let lastRetry: (() => Promise<void>) | null = null;
+
+/** Set by "Hide for 1 hour" on the pill. Cleared when the timer fires. */
+let dockSnoozeTimer: NodeJS.Timeout | null = null;
+
+/**
+ * What was last written into the user's document. Redo rewrites `transcript`
+ * (the original speech), undoes the paste, and pastes the new version, so
+ * repeated Redos never compound on an already-rewritten string.
+ */
+let lastInsertion: {
+  transcript: string;
+  insertedText: string;
+  target: PasteTarget | null;
+  attempt: number;
+  pasted: boolean;
+} | null = null;
+
 let providerCache: {
   apiKey: string;
   transcriptionModel: string;
@@ -69,43 +91,23 @@ let providerCache: {
   cleanup: GroqCleanupProvider;
   rewrite: GroqRewriteProvider;
 } | null = null;
-let pendingRewrite: {
-  targetKind: "uia" | "clipboard";
-  sourceText: string;
-  rewrittenText: string;
-  scope: "selection" | "whole";
-  targetId: string | null;
-  pasteTarget: PasteTarget | null;
-  actionId: RewriteActionId;
-  customInstruction?: string;
-  actionLabel: string;
-} | null = null;
-
-type RewriteTextSource = {
-  targetKind: "uia" | "clipboard";
-  scope: "selection" | "whole";
-  text: string;
-  targetId: string | null;
-  pasteTarget: PasteTarget | null;
-};
 
 const recorder = new AudioRecorder();
 const inserter = new TextInserter();
-const statusOverlay = new StatusOverlay();
-const inputAssistHelper = new UiaHelperClient();
-const inputAssistWindow = new InputAssistWindow({
-  onMenuOpened: () => {
-    inputAssistInteractionActive = true;
-    inputAssistWindow.showMenu();
+const dock = new OverlayDock({
+  onCancel: () => void cancelRecording(),
+  onStop: () => void stopRecording(),
+  onDictate: () => startRecording(),
+  onMenu: () => openRewriteMenu(),
+  onRedo: () => redoLastInsertion(),
+  onAction: (actionId, customInstruction) => runRewrite(actionId, customInstruction),
+  onRecovery: (action) => runRecovery(action),
+  onSettings: async () => {
+    dock.showRest();
+    await settingsWindowRef?.show();
   },
-  onAction: (actionId, customInstruction) =>
-    runInputAssistAction(`rewrite:${actionId}`, () => runInputAssistRewrite(actionId, customInstruction)),
-  onSpeak: () => runInputAssistAction("speak", () => speakHere()),
-  onReplace: () => runInputAssistAction("replace", () => replacePendingRewrite()),
-  onCopy: () => runInputAssistAction("copy", () => copyPendingRewrite()),
-  onRetry: () => runInputAssistAction("retry", () => retryPendingRewrite()),
-  onCancel: () => closeInputAssistInteraction(),
-  onBlur: () => handleInputAssistWindowBlur(),
+  onSnooze: () => snoozeDock(),
+  onDismiss: () => dock.showRest(),
 });
 
 app.setName("BayanFlow");
@@ -157,18 +159,18 @@ app.whenReady()
 
       isRecording = false;
       isProcessing = false;
+      isLatched = false;
       clearRecordingLimitTimer();
       activeSessionId = null;
       activePasteTarget = null;
       refreshTray();
       const normalized = normalizeError("recorder", error);
       void logger.error("dictation.recording.failed_async", { ...context, error: normalized });
-      showStatus("error", formatUserError(normalized.userMessage, normalized.id));
+      showFailure("recorder", formatUserError(normalized.userMessage, normalized.id));
     });
 
     await recorder.init();
-    await statusOverlay.init();
-    await inputAssistWindow.init();
+    await dock.init();
 
     const settingsWindow = new SettingsWindow(
       configStore,
@@ -176,9 +178,10 @@ app.whenReady()
         config = nextConfig;
         applyLoginItemSettings(config);
         warmDictationProviders(config);
-        restartHotkeyListener();
+        restartHotkeyListeners();
+        refreshDockIdle();
         refreshTray();
-        showStatus("idle", "Settings saved");
+        showDone("Settings saved", "ok", false);
       },
       () => ({
         hasGroqApiKey: Boolean(config.groqApiKey),
@@ -204,9 +207,9 @@ app.whenReady()
     );
     settingsWindowRef = settingsWindow;
 
-    restartHotkeyListener();
+    restartHotkeyListeners();
     createTray(settingsWindow);
-    await setInputAssistEnabled(config.inputAssistEnabledOnStartup, { silent: true });
+    refreshDockIdle();
     await showLaunchReadyNotice(settingsWindow);
     if (pendingSecondInstanceNotice) {
       pendingSecondInstanceNotice = false;
@@ -223,13 +226,12 @@ app.whenReady()
 app.on("will-quit", () => {
   void logger.info("app.shutdown.begin");
   hotkeyListener?.stop();
-  inputAssistHotkeyListener?.stop();
+  rewriteHotkeyListener?.stop();
+  cancelHotkeyListener?.stop();
   clearRecordingLimitTimer();
-  stopInputAssistPolling();
+  clearDockSnooze();
   recorder.destroy();
-  statusOverlay.destroy();
-  inputAssistWindow.destroy();
-  inputAssistHelper.destroy();
+  dock.destroy();
 });
 
 process.on("unhandledRejection", (error) => {
@@ -239,6 +241,126 @@ process.on("unhandledRejection", (error) => {
 process.on("uncaughtException", (error) => {
   void logger.error("process.uncaught_exception", { error: normalizeError("startup", error) });
 });
+
+/* ------------------------------------------------------------------ *
+ * Dock helpers. Every user-visible message goes through exactly one of
+ * these, so no status can ever be shown on a surface the user is not
+ * looking at.
+ * ------------------------------------------------------------------ */
+
+function showListening(): void {
+  dock.setView({
+    kind: "listening",
+    latched: isLatched,
+    hint: isLatched ? "Tap hotkey to finish" : "Release to finish · Esc cancels",
+  });
+}
+
+function showWorking(label: string): void {
+  dock.setView({ kind: "working", label, startedAt: Date.now() });
+}
+
+function showDone(label: string, tone: "ok" | "warn", canRedo: boolean): void {
+  dock.setView({ kind: "done", label, tone, canRedo });
+}
+
+function showFailure(failure: DockFailure, message: string, retry?: () => Promise<void>): void {
+  lastRetry = retry ?? null;
+  dock.setView({ kind: "error", message, recovery: recoveryForFailure(failure) });
+}
+
+/**
+ * The pill is shown whenever the user wants it and it is not snoozed. Its dot
+ * turns grey when the app is not actually ready to dictate.
+ */
+function refreshDockIdle(): void {
+  const enabled = config.showDock && dockSnoozeTimer === null;
+  dock.setIdleEnabled(enabled, Boolean(config.groqApiKey) && hotkeyAvailable);
+}
+
+function snoozeDock(): void {
+  clearDockSnooze();
+  dock.hide();
+  dockSnoozeTimer = setTimeout(() => {
+    dockSnoozeTimer = null;
+    refreshDockIdle();
+    void logger.info("dock.snooze.expired");
+  }, DOCK_SNOOZE_MS);
+  void logger.info("dock.snooze.started", { minutes: Math.round(DOCK_SNOOZE_MS / 60000) });
+  refreshTray();
+}
+
+function clearDockSnooze(): void {
+  if (!dockSnoozeTimer) {
+    return;
+  }
+
+  clearTimeout(dockSnoozeTimer);
+  dockSnoozeTimer = null;
+}
+
+async function toggleShowDock(): Promise<void> {
+  config = { ...config, showDock: !config.showDock };
+  clearDockSnooze();
+  await configStore.save(config);
+  refreshDockIdle();
+  refreshTray();
+  void logger.info("dock.visibility.toggled", { showDock: config.showDock });
+}
+
+/**
+ * A retired model id or a rejected key both fail identically on retry, so the
+ * dock must offer Settings rather than a Try again button that cannot work.
+ */
+function failureForGroqError(normalized: NormalizedError, fallback: DockFailure): DockFailure {
+  if (normalized.status === 404) {
+    return "model_unavailable";
+  }
+
+  if (normalized.status === 401 || normalized.status === 403) {
+    return "missing_api_key";
+  }
+
+  return fallback;
+}
+
+async function runRecovery(action: DockRecoveryAction): Promise<void> {
+  switch (action) {
+    case "settings":
+      dock.showRest();
+      await settingsWindowRef?.show();
+      return;
+    case "retry": {
+      const retry = lastRetry;
+      lastRetry = null;
+      if (retry) {
+        await retry();
+        return;
+      }
+
+      dock.showRest();
+      return;
+    }
+    case "redo":
+      await redoLastInsertion();
+      return;
+    case "copy":
+      if (lastInsertion) {
+        inserter.copyText(lastInsertion.insertedText, { requestId: createId("recovery-copy") });
+        showDone("Copied · press Ctrl+V", "ok", true);
+        return;
+      }
+
+      dock.showRest();
+      return;
+    default:
+      dock.showRest();
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Tray
+ * ------------------------------------------------------------------ */
 
 function createTray(settingsWindow: SettingsWindow): void {
   tray?.destroy();
@@ -266,21 +388,21 @@ function updateTrayMenu(settingsWindow: SettingsWindow): void {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: `Status: ${formatRuntimeState(runtimeState)}`, enabled: false },
-      { label: `Hotkey: ${config.hotkey}`, enabled: false },
-      { label: `Input Assist: ${inputAssistEnabled ? "On" : "Off"} (${config.inputAssistHotkey})`, enabled: false },
+      { label: `Dictate: hold ${config.hotkey}`, enabled: false },
+      { label: `Rewrite menu: ${config.inputAssistHotkey}`, enabled: false },
       { label: `Hotkey status: ${hotkeyAvailable ? "Active" : "Unavailable"}`, enabled: false },
       { label: `Last error: ${lastErrorId || "None"}`, enabled: false },
       {
-        label: "Toggle Input Assist",
+        label: "Show the pill",
         type: "checkbox",
-        checked: inputAssistEnabled,
-        click: () => void setInputAssistEnabled(!inputAssistEnabled),
+        checked: config.showDock && dockSnoozeTimer === null,
+        click: () => void toggleShowDock(),
       },
       {
-        label: "Auto paste after recording",
+        label: "Paste automatically",
         type: "checkbox",
         checked: config.autoPaste,
-        click: () => void toggleAutoPaste(settingsWindow),
+        click: () => void toggleAutoPaste(),
       },
       { label: "Settings", click: () => void settingsWindow.show() },
       { label: "Open Logs Folder", click: () => void openLogsFolder() },
@@ -293,16 +415,15 @@ function updateTrayMenu(settingsWindow: SettingsWindow): void {
 
 async function showLaunchReadyNotice(settingsWindow: SettingsWindow): Promise<void> {
   if (!config.groqApiKey) {
-    showStatus("error", "Add your Groq API key");
+    showFailure("missing_api_key", "Add your Groq API key to start dictating.");
     showTrayBalloon("BayanFlow setup needed", "Add your Groq API key to start dictating.");
     await settingsWindow.show();
     void logger.info("app.launch_notice.settings_opened", { reason: "missing_groq_api_key" });
     return;
   }
 
-  const message = `BayanFlow running: ${config.hotkey}`;
-  showStatus("idle", message);
-  showTrayBalloon("BayanFlow is running", `Use ${config.hotkey} to dictate. Left-click the tray icon for Settings.`);
+  showDone(`Ready · hold ${config.hotkey} to dictate`, "ok", false);
+  showTrayBalloon("BayanFlow is running", `Hold ${config.hotkey} to dictate. Left-click the tray icon for Settings.`);
   void logger.info("app.launch_notice.ready", { hotkey: config.hotkey });
 }
 
@@ -315,18 +436,14 @@ async function showAlreadyRunningNotice(): Promise<void> {
   }
 
   await settingsWindow.show();
-  showStatus("idle", "BayanFlow is already running");
+  showDone("BayanFlow is already running", "ok", false);
   showTrayBalloon("BayanFlow is already running", "Settings opened in the existing app.");
   void logger.info("app.second_instance.notice_shown");
 }
 
 function showTrayBalloon(title: string, content: string): void {
   try {
-    tray?.displayBalloon({
-      title,
-      content,
-      icon: createTrayIcon(),
-    });
+    tray?.displayBalloon({ title, content, icon: createTrayIcon() });
   } catch (error) {
     void logger.debug("tray.balloon.skipped", { error: normalizeError("startup", error) });
   }
@@ -342,12 +459,8 @@ function getRuntimeState(): RuntimeState {
     return "recording";
   }
 
-  if (isProcessing) {
+  if (isProcessing || rewriteInFlight) {
     return "processing";
-  }
-
-  if (inputAssistEnabled) {
-    return "input-assist";
   }
 
   if (!config?.groqApiKey) {
@@ -373,43 +486,81 @@ function formatRuntimeState(state: RuntimeState): string {
   return state[0].toUpperCase() + state.slice(1);
 }
 
-function restartHotkeyListener(): void {
+/* ------------------------------------------------------------------ *
+ * Hotkeys: hold to talk, tap to latch
+ * ------------------------------------------------------------------ */
+
+function restartHotkeyListeners(): void {
   hotkeyListener?.stop();
-  inputAssistHotkeyListener?.stop();
+  rewriteHotkeyListener?.stop();
+  cancelHotkeyListener?.stop();
+
   hotkeyListener = new HotkeyListener(config.hotkey, {
-    onPressed: () => void toggleRecording(),
+    onPressed: () => void handleDictationKeyDown(),
+    onReleased: (heldMs) => handleDictationKeyUp(heldMs),
   });
-  inputAssistHotkeyListener = new HotkeyListener(config.inputAssistHotkey, {
-    onPressed: () => void setInputAssistEnabled(!inputAssistEnabled),
+  rewriteHotkeyListener = new HotkeyListener(config.inputAssistHotkey, {
+    onPressed: () => void openRewriteMenu(),
+  });
+  // Esc is observed, not consumed, so the focused app still receives it.
+  cancelHotkeyListener = new HotkeyListener("Esc", {
+    onPressed: () => {
+      if (isRecording) {
+        void cancelRecording();
+      }
+    },
   });
 
   try {
     hotkeyListener.start();
-    inputAssistHotkeyListener.start();
+    rewriteHotkeyListener.start();
+    cancelHotkeyListener.start();
     hotkeyAvailable = true;
+    refreshDockIdle();
     refreshTray();
   } catch (error) {
     hotkeyAvailable = false;
     const normalized = normalizeError("hotkey", error);
     lastErrorId = normalized.id;
     void logger.error("hotkey.listener.failed", { error: normalized });
-    showStatus("error", formatUserError(normalized.userMessage, normalized.id));
+    showFailure("hotkey", "Hotkey unavailable. Another app may be using that shortcut.");
     refreshTray();
   }
 }
 
-async function toggleRecording(): Promise<void> {
+async function handleDictationKeyDown(): Promise<void> {
   if (isRecording) {
-    if (statusOverlay.acceptPendingConfirm()) {
-      return;
+    // A second press while latched is the stop gesture.
+    if (isLatched) {
+      await stopRecording();
     }
 
-    await stopRecording();
     return;
   }
 
+  isLatched = false;
   await startRecording();
 }
+
+function handleDictationKeyUp(heldMs: number): void {
+  if (!isRecording) {
+    return;
+  }
+
+  if (classifyPress(heldMs) === "hold") {
+    void logger.info("dictation.gesture", { gesture: "hold", heldMs });
+    void stopRecording();
+    return;
+  }
+
+  isLatched = true;
+  void logger.info("dictation.gesture", { gesture: "tap_latch", heldMs });
+  showListening();
+}
+
+/* ------------------------------------------------------------------ *
+ * Dictation
+ * ------------------------------------------------------------------ */
 
 async function startRecording(): Promise<void> {
   if (isRecording) {
@@ -417,13 +568,13 @@ async function startRecording(): Promise<void> {
   }
 
   if (isProcessing) {
-    showStatus("processing", "Still processing previous recording...");
+    showWorking("Still finishing the previous recording");
     return;
   }
 
   if (!config.groqApiKey) {
     void logger.warn("dictation.start.blocked", { reason: "missing_groq_api_key" });
-    showStatus("error", "Add your Groq API key");
+    showFailure("missing_api_key", "Add your Groq API key to start dictating.");
     return;
   }
 
@@ -435,6 +586,7 @@ async function startRecording(): Promise<void> {
   lastPasteUsedHandle = activePasteTarget?.handle !== null && activePasteTarget?.handle !== undefined;
   lastStopReason = "";
   refreshTray();
+  showListening();
   void logger.info("dictation.start", context);
 
   try {
@@ -448,9 +600,9 @@ async function startRecording(): Promise<void> {
         void stopRecording("max_duration");
       }
     }, MAX_RECORDING_DURATION_MS + 500);
-    void waitForRecordingDecision();
   } catch (error) {
     isRecording = false;
+    isLatched = false;
     activeSessionId = null;
     activePasteTarget = null;
     refreshTray();
@@ -458,19 +610,8 @@ async function startRecording(): Promise<void> {
     lastErrorId = normalized.id;
     lastMicError = normalized.userMessage;
     void logger.error("dictation.start.failed", { ...context, error: normalized });
-    showStatus("error", formatUserError(normalized.userMessage, normalized.id));
+    showFailure("recorder", formatUserError(normalized.userMessage, normalized.id));
   }
-}
-
-async function waitForRecordingDecision(): Promise<void> {
-  const accepted = await statusOverlay.confirm("Recording - press hotkey again or check to finish");
-
-  if (accepted) {
-    await stopRecording();
-    return;
-  }
-
-  await cancelRecording();
 }
 
 async function cancelRecording(): Promise<void> {
@@ -479,9 +620,10 @@ async function cancelRecording(): Promise<void> {
   }
 
   isRecording = false;
+  isLatched = false;
   isProcessing = true;
   clearRecordingLimitTimer();
-  showStatus("idle", "Canceled");
+  dock.showRest();
   const context = currentContext();
   void logger.info("dictation.cancel", context);
   refreshTray();
@@ -506,13 +648,15 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
   }
 
   isRecording = false;
+  isLatched = false;
   isProcessing = true;
   clearRecordingLimitTimer();
-  showStatus("processing", "Preparing recording...");
+  showWorking("Finishing recording");
   refreshTray();
 
   let audioPath: string | null = null;
   let failureCategory: ErrorCategory = "recorder";
+  let failureKind: DockFailure = "recorder";
   const context = currentContext();
   const latencyStartedAt = Date.now();
   let recorderStopMs = 0;
@@ -526,24 +670,26 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
     recorderStopMs = Date.now() - latencyStartedAt;
     if (!audioPath) {
       void logger.info("dictation.no_speech", { ...context, stopReason: lastStopReason });
-      showStatus("idle", formatEmptyRecordingMessage(lastStopReason));
+      showDone(formatEmptyRecordingMessage(lastStopReason), "warn", false);
       return;
     }
 
     failureCategory = "transcription";
+    failureKind = "transcription";
     await assertAudioWithinLimits(audioPath);
     const pipelineStartedAt = Date.now();
     const result = await runDictationPipeline(audioPath, context);
     pipelineMs = Date.now() - pipelineStartedAt;
     if (!result.finalText) {
       void logger.info("dictation.no_text", context);
-      showStatus("idle", "No text detected");
+      showDone("No text detected", "warn", false);
       return;
     }
 
     failureCategory = "paste";
+    failureKind = "paste_blocked";
     const insertionStartedAt = Date.now();
-    await insertOrCopyText(result.finalText, context, Boolean(result.cleanupFallback));
+    await insertOrCopyText(result, context);
     insertionMs = Date.now() - insertionStartedAt;
     void logger.info("dictation.success", {
       ...context,
@@ -556,7 +702,13 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
     const normalized = normalizeError(failureCategory, error);
     lastErrorId = normalized.id;
     void logger.error("dictation.failed", { ...context, error: normalized });
-    showStatus("error", formatUserError(normalized.userMessage, normalized.id));
+    // A blocked paste is not a lost transcript: pasteText leaves the text on the
+    // clipboard, so say that rather than surfacing the raw category message.
+    const message =
+      failureKind === "paste_blocked"
+        ? "Paste blocked. Your text is on the clipboard — press Ctrl+V."
+        : formatUserError(normalized.userMessage, normalized.id);
+    showFailure(failureForGroqError(normalized, failureKind), message, () => stopRecordingRetry());
   } finally {
     void logger.info("dictation.latency", {
       ...context,
@@ -578,575 +730,244 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
   }
 }
 
-async function insertOrCopyText(text: string, context: OperationContext, cleanupFallback = false): Promise<void> {
+/**
+ * "Try again" after a failed dictation cannot re-run transcription, because the
+ * temp audio is already deleted. It restarts the recording instead, which is
+ * what the user wants and what the button implies.
+ */
+async function stopRecordingRetry(): Promise<void> {
+  dock.showRest();
+  await startRecording();
+}
+
+async function insertOrCopyText(result: DictationResult, context: OperationContext): Promise<void> {
+  const text = result.finalText;
+  const cleanupFallback = Boolean(result.cleanupFallback);
+  const target = activePasteTarget;
+
+  lastInsertion = {
+    transcript: result.rawText,
+    insertedText: text,
+    target,
+    attempt: 1,
+    pasted: false,
+  };
+
   if (!config.autoPaste) {
     inserter.copyText(text, context);
-    showStatus("idle", cleanupFallback ? "Copied raw transcript; review/edit" : "Copied");
+    showDone(cleanupFallback ? "Copied raw transcript · press Ctrl+V" : "Copied · press Ctrl+V", cleanupFallback ? "warn" : "ok", true);
     return;
   }
 
-  showStatus("pasting", "Pasting...");
   try {
-    await inserter.pasteText(text, context, activePasteTarget);
-    showStatus("idle", cleanupFallback ? "Pasted raw transcript; review/edit" : "Pasted");
+    // Bring the captured window forward first. The user may have finished the
+    // recording by clicking the dock, and anything else that took focus in the
+    // meantime would otherwise fail the target check inside pasteText.
+    if (target) {
+      await inserter.focusTargetWindow(target, context);
+    }
+
+    await inserter.pasteText(text, context, target);
+    lastInsertion.pasted = true;
+    showDone(cleanupFallback ? "Pasted raw transcript" : "Pasted", cleanupFallback ? "warn" : "ok", true);
   } catch (error) {
-    showStatus("error", "Paste blocked; text copied. Press Ctrl+V manually.");
+    // pasteText already left the text on the clipboard; stopRecording's catch
+    // owns the user-facing message so it is only shown once.
+    void logger.warn("dictation.paste.blocked_copied", { ...context, textChars: text.length });
     throw error;
   }
 }
 
-async function toggleAutoPaste(settingsWindow: SettingsWindow): Promise<void> {
-  if (!config.autoPaste) {
-    showStatus("idle", "Review auto-paste warning in Settings");
-    await settingsWindow.show();
-    return;
-  }
-
-  config = {
-    ...config,
-    autoPaste: false,
-  };
+async function toggleAutoPaste(): Promise<void> {
+  config = { ...config, autoPaste: !config.autoPaste };
   await configStore.save(config);
   refreshTray();
-  showStatus("idle", "Auto paste off");
+  showDone(config.autoPaste ? "Auto paste on" : "Auto paste off · copy only", "ok", false);
   void logger.info("settings.auto_paste.toggled", { autoPaste: config.autoPaste });
 }
 
-async function setInputAssistEnabled(enabled: boolean, options: { silent?: boolean } = {}): Promise<void> {
-  if (inputAssistEnabled === enabled) {
+/* ------------------------------------------------------------------ *
+ * Redo: undo the last paste, re-polish the original transcript, paste again
+ * ------------------------------------------------------------------ */
+
+async function redoLastInsertion(): Promise<void> {
+  if (!lastInsertion) {
+    showFailure("generic", "Nothing to redo yet.");
     return;
   }
 
-  inputAssistEnabled = enabled;
-  inputAssistInteractionActive = false;
-  inputAssistActionInFlight = false;
-  clearInputAssistActionTimer();
-  pendingRewrite = null;
-  if (enabled) {
-    inputAssistOriginPasteTarget = await inserter.captureActiveTarget({ requestId: createId("input-assist-origin") });
-    inputAssistWindow.setContextBounds(inputAssistOriginPasteTarget?.bounds);
-    inputAssistOriginWindowHandle = null;
-    startInputAssistPolling();
-    if (!options.silent) {
-      showStatus("idle", "Input Assist on");
-    }
-    void logger.info("input_assist.enabled");
-  } else {
-    stopInputAssistPolling();
-    inputAssistOriginPasteTarget = null;
-    inputAssistOriginWindowHandle = null;
-    inputAssistWindow.hide();
-    if (!options.silent) {
-      showStatus("idle", "Input Assist off");
-    }
-    void logger.info("input_assist.disabled");
-  }
-
-  refreshTray();
-}
-
-function startInputAssistPolling(): void {
-  stopInputAssistPolling();
-  inputAssistPollTimer = setInterval(() => {
-    void refreshInputAssistTarget();
-  }, 500);
-  void refreshInputAssistTarget();
-}
-
-function stopInputAssistPolling(): void {
-  if (inputAssistPollTimer) {
-    clearInterval(inputAssistPollTimer);
-    inputAssistPollTimer = null;
-  }
-}
-
-async function refreshInputAssistTarget(): Promise<void> {
-  if (!inputAssistEnabled || inputAssistInteractionActive || isRecording || isProcessing) {
-    return;
-  }
-
-  try {
-    const target = await inputAssistHelper.getTarget();
-    if (!target) {
-      inputAssistWindow.showFallbackIcon(inputAssistOriginPasteTarget?.bounds);
-      return;
-    }
-
-    if (shouldDisableInputAssistForWindowChange(target.windowHandle)) {
-      void logger.info("input_assist.auto_disabled", { reason: "target_window_changed" });
-      await setInputAssistEnabled(false);
-      return;
-    }
-
-    inputAssistWindow.showIcon(target);
-  } catch (error) {
-    void logger.debug("input_assist.target.skipped", { error: normalizeError("startup", error) });
-    inputAssistWindow.showFallbackIcon(inputAssistOriginPasteTarget?.bounds);
-  }
-}
-
-async function runInputAssistAction(actionName: string, action: () => Promise<void>): Promise<void> {
-  if (inputAssistActionInFlight) {
-    inputAssistWindow.showLoading("Still working...");
-    void logger.warn("input_assist.action.ignored_busy", { actionName });
-    return;
-  }
-
-  const startedAt = Date.now();
-  inputAssistActionInFlight = true;
-  void logger.info("input_assist.action.start", { actionName });
-  inputAssistActionTimer = setTimeout(() => {
-    if (!inputAssistActionInFlight) {
-      return;
-    }
-
-    inputAssistActionInFlight = false;
-    inputAssistActionTimer = null;
-    pendingRewrite = null;
-    inputAssistWindow.showError("Action timed out. Click the input and try again.");
-    void logger.warn("input_assist.action.timeout", { actionName, timeoutMs: INPUT_ASSIST_ACTION_TIMEOUT_MS });
-    refreshTray();
-  }, INPUT_ASSIST_ACTION_TIMEOUT_MS);
-
-  try {
-    await action();
-    void logger.info("input_assist.action.finish", { actionName, durationMs: Date.now() - startedAt });
-  } catch (error) {
-    const normalized = normalizeError("startup", error);
-    lastErrorId = normalized.id;
-    void logger.error("input_assist.action.failed", {
-      actionName,
-      durationMs: Date.now() - startedAt,
-      error: normalized,
-    });
-    inputAssistWindow.showError(formatUserError(normalized.userMessage, normalized.id));
-  } finally {
-    clearInputAssistActionTimer();
-    inputAssistActionInFlight = false;
-    refreshTray();
-  }
-}
-
-function clearInputAssistActionTimer(): void {
-  if (!inputAssistActionTimer) {
-    return;
-  }
-
-  clearTimeout(inputAssistActionTimer);
-  inputAssistActionTimer = null;
-}
-
-function handleInputAssistWindowBlur(): void {
-  if (!inputAssistEnabled || !inputAssistInteractionActive || inputAssistActionInFlight) {
-    return;
-  }
-
-  void logger.info("input_assist.auto_disabled", { reason: "assist_window_blur" });
-  void setInputAssistEnabled(false);
-}
-
-function shouldDisableInputAssistForWindowChange(windowHandle: number): boolean {
-  if (!isUsableWindowHandle(windowHandle)) {
-    return false;
-  }
-
-  if (inputAssistOriginWindowHandle === null) {
-    inputAssistOriginWindowHandle = windowHandle;
-    return false;
-  }
-
-  return windowHandle !== inputAssistOriginWindowHandle;
-}
-
-function isUsableWindowHandle(windowHandle: number): boolean {
-  return Number.isFinite(windowHandle) && windowHandle > 0;
-}
-
-async function captureInputAssistRewriteSource(): Promise<RewriteTextSource | null> {
-  let uiaSource: RewriteTextSource | null = null;
-
-  try {
-    const source = await inputAssistHelper.captureText();
-    if (source) {
-      uiaSource = {
-        targetKind: "uia",
-        scope: source.scope,
-        text: source.text,
-        targetId: source.target.targetId,
-        pasteTarget: inputAssistOriginPasteTarget,
-      };
-      void logger.info("input_assist.capture.success", {
-        source: "uia",
-        scope: source.scope,
-        textChars: source.text.length,
-        hasTargetId: Boolean(source.target.targetId),
-      });
-
-      if (source.scope === "selection") {
-        return uiaSource;
-      }
-    }
-  } catch (error) {
-    void logger.debug("input_assist.capture.uia_skipped", { error: normalizeError("startup", error) });
-  }
-
-  const clipboardSource = await captureInputAssistClipboardSource();
-  if (uiaSource?.scope === "whole") {
-    if (
-      clipboardSource?.scope === "selection" &&
-      shouldPreferClipboardSelectionOverUiaWhole(clipboardSource.text, uiaSource.text)
-    ) {
-      void logger.info("input_assist.capture.selection_override", {
-        source: "clipboard",
-        previousSource: "uia",
-        textChars: clipboardSource.text.length,
-      });
-      return clipboardSource;
-    }
-
-    if (clipboardSource?.scope === "selection") {
-      void logger.info("input_assist.capture.selection_ignored", {
-        reason: "likely_implicit_line_copy",
-        textChars: clipboardSource.text.length,
-      });
-    }
-
-    if (
-      clipboardSource?.scope === "whole" &&
-      shouldPreferClipboardWholeOverUiaWhole(clipboardSource.text, uiaSource.text)
-    ) {
-      void logger.info("input_assist.capture.whole_override", {
-        source: "clipboard",
-        previousSource: "uia",
-        clipboardChars: clipboardSource.text.length,
-        uiaChars: uiaSource.text.length,
-      });
-      return clipboardSource;
-    }
-
-    if (uiaSource.text.trim()) {
-      return uiaSource;
-    }
-  }
-
-  return clipboardSource;
-}
-
-async function captureInputAssistClipboardSource(): Promise<RewriteTextSource | null> {
-  if (!inputAssistOriginPasteTarget) {
-    return null;
-  }
-
-  try {
-    const source = await inserter.captureTextFromTargetByClipboard(inputAssistOriginPasteTarget, {
-      requestId: createId("rewrite-capture-fallback"),
-    });
-    if (!source) {
-      return null;
-    }
-
-    void logger.info("input_assist.capture.success", {
-      source: "clipboard",
-      scope: source.scope,
-      textChars: source.text.length,
-      hasPasteTarget: Boolean(inputAssistOriginPasteTarget),
-    });
-    return {
-      targetKind: "clipboard",
-      scope: source.scope,
-      text: source.text,
-      targetId: null,
-      pasteTarget: inputAssistOriginPasteTarget,
-    };
-  } catch (error) {
-    void logger.debug("input_assist.capture.clipboard_skipped", { error: normalizeError("paste", error) });
-    return null;
-  }
-}
-
-async function runInputAssistRewrite(actionId: RewriteActionId, customInstruction?: string): Promise<void> {
   if (!config.groqApiKey) {
-    inputAssistWindow.showError("Add your Groq API key before using rewrite.");
+    showFailure("missing_api_key", "Add your Groq API key first.");
     return;
   }
 
-  inputAssistWindow.showLoading("Preparing selected text...");
-  try {
-    const source = await captureInputAssistRewriteSource();
-    if (!source || !source.text.trim()) {
-      inputAssistWindow.showError("Type or select text first.");
-      return;
-    }
+  if (rewriteInFlight) {
+    return;
+  }
 
-    const action = getRewriteAction(actionId);
-    inputAssistWindow.showLoading(`${action.label}...`);
-    const rewrittenText = await getRewriteProvider(config).rewrite(
-      source.text,
-      { actionId, customInstruction },
-      { requestId: createId("rewrite") },
+  const insertion = lastInsertion;
+  const context = { requestId: createId("redo") };
+  rewriteInFlight = true;
+  insertion.attempt += 1;
+  refreshTray();
+  showWorking(`Rewriting · attempt ${insertion.attempt}`);
+
+  try {
+    const rewritten = await getRewriteProvider(config).rewrite(
+      insertion.transcript,
+      { actionId: "custom", customInstruction: buildRedoInstruction(insertion.attempt) },
+      context,
     );
 
-    pendingRewrite = {
-      targetKind: source.targetKind,
-      sourceText: source.text,
-      rewrittenText,
-      scope: source.scope,
-      targetId: source.targetId,
-      pasteTarget: source.pasteTarget,
-      actionId,
-      customInstruction,
-      actionLabel: action.label,
+    if (!insertion.pasted) {
+      inserter.copyText(rewritten, context);
+      insertion.insertedText = rewritten;
+      showDone("New version copied · press Ctrl+V", "ok", true);
+      return;
+    }
+
+    await inserter.sendUndo(context, insertion.target);
+    await inserter.pasteText(rewritten, context, insertion.target);
+    insertion.insertedText = rewritten;
+    showDone(`Replaced · attempt ${insertion.attempt}`, "ok", true);
+    void logger.info("redo.success", { attempt: insertion.attempt, outputChars: rewritten.length });
+  } catch (error) {
+    const normalized = normalizeError("cleanup", error);
+    lastErrorId = normalized.id;
+    void logger.error("redo.failed", { attempt: insertion.attempt, error: normalized });
+    inserter.copyText(insertion.insertedText, context);
+    showFailure("paste_blocked", `Redo failed. ${normalized.userMessage} (${normalized.id})`);
+  } finally {
+    rewriteInFlight = false;
+    refreshTray();
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Rewrite menu
+ * ------------------------------------------------------------------ */
+
+async function openRewriteMenu(): Promise<void> {
+  if (isRecording || isProcessing) {
+    showWorking("Finishing dictation first");
+    return;
+  }
+
+  if (!config.groqApiKey) {
+    showFailure("missing_api_key", "Add your Groq API key to use rewrite.");
+    return;
+  }
+
+  // Capture the target BEFORE the menu takes focus, otherwise the active
+  // window becomes the dock itself.
+  rewriteTarget = await inserter.captureActiveTarget({ requestId: createId("rewrite-target") });
+
+  dock.setView({
+    kind: "menu",
+    actions: getDockMenuActions(),
+    expanded: false,
+    note: rewriteTarget ? "Rewrites the text in your last input" : "No input detected · result will be copied",
+  });
+}
+
+async function runRewrite(actionId: string, customInstruction?: string): Promise<void> {
+  if (!isRewriteActionId(actionId)) {
+    void logger.warn("rewrite.unknown_action", { actionId });
+    return;
+  }
+
+  if (rewriteInFlight) {
+    return;
+  }
+
+  if (!config.groqApiKey) {
+    showFailure("missing_api_key", "Add your Groq API key to use rewrite.");
+    return;
+  }
+
+  const target = rewriteTarget;
+  if (!target) {
+    showFailure("generic", "Could not find the input. Click into it and press the rewrite hotkey again.");
+    return;
+  }
+
+  const action = getRewriteAction(actionId);
+  const context = { requestId: createId("rewrite") };
+  // Local, not `lastInsertion`: a previous dictation leaves `lastInsertion` set,
+  // and reading it here made a failed API call report "could not replace the
+  // text" and copy the old dictation onto the clipboard.
+  let rewritten: string | null = null;
+  rewriteInFlight = true;
+  refreshTray();
+  showWorking("Reading your text");
+
+  try {
+    const source = await inserter.captureTextFromTargetByClipboard(target, context);
+    if (!source || !source.text.trim()) {
+      showFailure("generic", "No text found in that input. Type or select something first.");
+      return;
+    }
+
+    showWorking(`${action.label}...`);
+    rewritten = await getRewriteProvider(config).rewrite(
+      source.text,
+      { actionId, customInstruction },
+      context,
+    );
+
+    lastInsertion = {
+      transcript: source.text,
+      insertedText: rewritten,
+      target,
+      attempt: 1,
+      pasted: false,
     };
-    inputAssistWindow.showPreview({
-      scope: source.scope,
-      actionLabel: action.label,
-      originalChars: source.text.length,
-      rewrittenText,
-      safeReplace: source.targetKind === "uia" || Boolean(source.pasteTarget),
-      replaceMode: source.targetKind === "uia" ? "verified" : source.pasteTarget ? "window" : "copy",
-    });
-    void logger.info("input_assist.rewrite.preview_ready", {
+
+    // captureTextFromTargetByClipboard leaves the source text selected, but a
+    // network round-trip has passed since. replaceWholeTextByClipboard
+    // re-verifies the input before overwriting; a plain selection paste asserts
+    // the window instead. Either way a mismatch falls back to copy.
+    if (source.scope === "whole") {
+      await inserter.replaceWholeTextByClipboard(source.text, rewritten, target, context);
+    } else {
+      await inserter.focusTargetWindow(target, context);
+      await inserter.pasteText(rewritten, context, target);
+    }
+
+    lastInsertion.pasted = true;
+    showDone(`${action.label} applied`, "ok", true);
+    void logger.info("rewrite.success", {
       actionId,
       scope: source.scope,
       inputChars: source.text.length,
-      outputChars: rewrittenText.length,
+      outputChars: rewritten.length,
     });
   } catch (error) {
     const normalized = normalizeError("cleanup", error);
     lastErrorId = normalized.id;
-    void logger.error("input_assist.rewrite.failed", { actionId, error: normalized });
-    inputAssistWindow.showError(formatUserError(normalized.userMessage, normalized.id));
+    void logger.error("rewrite.failed", { actionId, error: normalized });
+
+    // Only claim a replacement problem when THIS attempt actually produced text.
+    if (rewritten) {
+      inserter.copyText(rewritten, context);
+      showFailure("paste_blocked", "Could not replace the text. The rewrite is on your clipboard — press Ctrl+V.");
+      return;
+    }
+
+    showFailure(
+      failureForGroqError(normalized, "transcription"),
+      formatUserError(normalized.userMessage, normalized.id),
+      () => runRewrite(actionId, customInstruction),
+    );
   } finally {
+    rewriteInFlight = false;
     refreshTray();
   }
 }
 
-async function replacePendingRewrite(): Promise<void> {
-  if (!pendingRewrite) {
-    inputAssistWindow.showError("No rewrite preview is ready.");
-    return;
-  }
-
-  const rewrite = pendingRewrite;
-
-  if (rewrite.targetKind === "clipboard") {
-    if (!rewrite.pasteTarget) {
-      inserter.copyText(rewrite.rewrittenText, { requestId: createId("rewrite-copy-unverified") });
-      void logger.warn("input_assist.replace.unverified_copied", {
-        actionId: rewrite.actionId,
-        scope: rewrite.scope,
-        outputChars: rewrite.rewrittenText.length,
-      });
-      closeInputAssistInteraction({ silentDisable: true });
-      showStatus("error", "Could not refocus the input; rewritten text copied. Press Ctrl+V manually.");
-      return;
-    }
-
-    try {
-      const context = { requestId: createId("rewrite-window-paste") };
-      await inserter.focusTargetWindow(rewrite.pasteTarget, context);
-      await inserter.pasteText(rewrite.rewrittenText, context, rewrite.pasteTarget);
-      void logger.info("input_assist.replace.window_paste_success", {
-        actionId: rewrite.actionId,
-        scope: rewrite.scope,
-        outputChars: rewrite.rewrittenText.length,
-      });
-      closeInputAssistInteraction({ silentDisable: true });
-      showStatus("idle", "Pasted");
-      return;
-    } catch (error) {
-      inserter.copyText(rewrite.rewrittenText, { requestId: createId("rewrite-copy-window-fallback") });
-      const normalized = normalizeError("paste", error);
-      lastErrorId = normalized.id;
-      void logger.error("input_assist.replace.window_paste_fallback_copied", {
-        actionId: rewrite.actionId,
-        scope: rewrite.scope,
-        outputChars: rewrite.rewrittenText.length,
-        error: normalized,
-      });
-      closeInputAssistInteraction({ silentDisable: true });
-      showStatus("error", "Paste blocked; rewritten text copied. Press Ctrl+V manually.");
-      return;
-    }
-  }
-
-  if (!rewrite.targetId) {
-    inserter.copyText(rewrite.rewrittenText, { requestId: createId("rewrite-copy-unverified") });
-    void logger.warn("input_assist.replace.unverified_copied", {
-      actionId: rewrite.actionId,
-      scope: rewrite.scope,
-      outputChars: rewrite.rewrittenText.length,
-    });
-    closeInputAssistInteraction({ silentDisable: true });
-    showStatus("error", "Input not verified; rewritten text copied. Press Ctrl+V manually.");
-    return;
-  }
-
-  try {
-    if (rewrite.scope === "whole") {
-      await replaceWholeInputAssistText(rewrite);
-    } else {
-      await inputAssistHelper.verifySelection(rewrite.targetId, rewrite.sourceText);
-      await inserter.pasteText(rewrite.rewrittenText, { requestId: createId("rewrite-paste") }, null);
-    }
-
-    void logger.info("input_assist.replace.success", {
-      actionId: rewrite.actionId,
-      scope: rewrite.scope,
-      outputChars: rewrite.rewrittenText.length,
-    });
-    closeInputAssistInteraction({ silentDisable: true });
-    showStatus("idle", "Replaced");
-  } catch (error) {
-    inserter.copyText(rewrite.rewrittenText, { requestId: createId("rewrite-copy-fallback") });
-    const normalized = normalizeError("paste", error);
-    lastErrorId = normalized.id;
-    void logger.error("input_assist.replace.fallback_copied", {
-      actionId: rewrite.actionId,
-      scope: rewrite.scope,
-      outputChars: rewrite.rewrittenText.length,
-      error: normalized,
-    });
-    closeInputAssistInteraction({ silentDisable: true });
-    showStatus("error", formatRewriteReplaceFallbackMessage(rewrite.scope));
-  }
-}
-
-async function replaceWholeInputAssistText(rewrite: NonNullable<typeof pendingRewrite>): Promise<void> {
-  try {
-    await inputAssistHelper.replaceWholeText(rewrite.targetId || "", rewrite.sourceText, rewrite.rewrittenText);
-    return;
-  } catch (error) {
-    void logger.warn("input_assist.replace.direct_whole_skipped", {
-      actionId: rewrite.actionId,
-      error: normalizeError("paste", error),
-    });
-  }
-
-  if (!rewrite.pasteTarget) {
-    throw new Error("Input cannot be replaced directly.");
-  }
-
-  await inserter.replaceWholeTextByClipboard(
-    rewrite.sourceText,
-    rewrite.rewrittenText,
-    rewrite.pasteTarget,
-    { requestId: createId("rewrite-whole-clipboard") },
-  );
-}
-
-function formatRewriteReplaceFallbackMessage(scope: "selection" | "whole"): string {
-  if (scope === "selection") {
-    return "Selection changed; rewritten text copied. Press Ctrl+V manually.";
-  }
-
-  return "Input changed or blocked replacement; rewritten text copied. Press Ctrl+V manually.";
-}
-
-async function copyPendingRewrite(): Promise<void> {
-  if (!pendingRewrite) {
-    inputAssistWindow.showError("No rewrite preview is ready.");
-    return;
-  }
-
-  inserter.copyText(pendingRewrite.rewrittenText, { requestId: createId("rewrite-copy") });
-  void logger.info("input_assist.copy.success", {
-    actionId: pendingRewrite.actionId,
-    scope: pendingRewrite.scope,
-    outputChars: pendingRewrite.rewrittenText.length,
-  });
-  closeInputAssistInteraction({ silentDisable: true });
-  showStatus("idle", "Copied");
-}
-
-async function retryPendingRewrite(): Promise<void> {
-  if (!pendingRewrite) {
-    inputAssistWindow.showError("No rewrite preview is ready.");
-    return;
-  }
-
-  await runInputAssistRewrite(pendingRewrite.actionId, pendingRewrite.customInstruction);
-}
-
-async function speakHere(): Promise<void> {
-  try {
-    const readiness = getInputAssistSpeechReadiness({
-      hasGroqApiKey: Boolean(config.groqApiKey),
-      isRecording,
-      isProcessing,
-    });
-
-    if (readiness === "blocked_missing_api_key") {
-      void logger.warn("input_assist.speak_here.blocked", { reason: readiness });
-      inputAssistWindow.showError("Add your Groq API key before using Speak here.");
-      return;
-    }
-
-    if (readiness === "blocked_processing") {
-      void logger.warn("input_assist.speak_here.blocked", { reason: readiness });
-      inputAssistWindow.showError("Speech-to-text is still processing. Try again after it finishes.");
-      return;
-    }
-
-    if (readiness === "cancel_active_recording") {
-      void logger.info("input_assist.speak_here.cancel_active_recording");
-      inputAssistWindow.showLoading("Stopping current recording...");
-      await cancelRecording();
-    }
-
-    const focused = await focusInputAssistTargetForSpeech();
-    if (!focused) {
-      inputAssistWindow.showError("Could not refocus the input. Click the field and try again.");
-      return;
-    }
-
-    closeInputAssistInteraction({ silentDisable: true });
-    await startRecording();
-  } catch (error) {
-    const normalized = normalizeError("recorder", error);
-    lastErrorId = normalized.id;
-    void logger.error("input_assist.speak_here.failed", { error: normalized });
-    inputAssistWindow.showError(formatUserError(normalized.userMessage, normalized.id));
-  }
-}
-
-async function focusInputAssistTargetForSpeech(): Promise<boolean> {
-  try {
-    const source = await inputAssistHelper.captureText();
-    if (source) {
-      await inputAssistHelper.focusTarget(source.target.targetId);
-      return true;
-    }
-  } catch (error) {
-    void logger.debug("input_assist.speak_here.uia_focus_skipped", { error: normalizeError("recorder", error) });
-  }
-
-  if (!inputAssistOriginPasteTarget) {
-    return false;
-  }
-
-  try {
-    await inserter.focusTargetWindow(inputAssistOriginPasteTarget, { requestId: createId("speak-here-focus") });
-    return true;
-  } catch (error) {
-    void logger.debug("input_assist.speak_here.window_focus_skipped", { error: normalizeError("paste", error) });
-    return false;
-  }
-}
-
-function closeInputAssistInteraction(options: { keepEnabled?: boolean; silentDisable?: boolean } = {}): void {
-  pendingRewrite = null;
-  inputAssistInteractionActive = false;
-  inputAssistWindow.hide();
-  if (!options.keepEnabled && inputAssistEnabled) {
-    void setInputAssistEnabled(false, { silent: options.silentDisable === true });
-    return;
-  }
-
-  if (inputAssistEnabled) {
-    void refreshInputAssistTarget();
-  }
-}
+/* ------------------------------------------------------------------ *
+ * Providers
+ * ------------------------------------------------------------------ */
 
 async function runDictationPipeline(audioPath: string, context: OperationContext): Promise<DictationResult> {
   const providers = getDictationProviders(config);
@@ -1159,12 +980,7 @@ async function runDictationPipeline(audioPath: string, context: OperationContext
     transcription: providers.transcription,
     cleanup: config.cleanupEnabled ? providers.cleanup : undefined,
     onStage: (stage) => {
-      if (stage === "transcribing") {
-        showStatus("processing", "Converting speech to text...");
-        return;
-      }
-
-      showStatus("processing", "Polishing transcript...");
+      showWorking(stage === "transcribing" ? "Transcribing" : "Polishing");
     },
     onCleanupFallback: (error, rawText) => {
       lastErrorId = error.id;
@@ -1222,9 +1038,9 @@ function getRewriteProvider(nextConfig: AppConfig): GroqRewriteProvider {
   return getDictationProviders(nextConfig).rewrite;
 }
 
-function showStatus(status: "idle" | "listening" | "processing" | "confirm" | "pasting" | "error", message: string): void {
-  statusOverlay.show({ status, message });
-}
+/* ------------------------------------------------------------------ *
+ * Diagnostics, logs, temp files
+ * ------------------------------------------------------------------ */
 
 function createTrayIcon() {
   return nativeImage.createFromPath(path.join(__dirname, "assets", "tray-icon.ico"));
@@ -1258,7 +1074,7 @@ async function exportDiagnostics(): Promise<void> {
     },
     hotkey: {
       configured: config.hotkey,
-      inputAssistConfigured: config.inputAssistHotkey,
+      rewriteConfigured: config.inputAssistHotkey,
       available: hotkeyAvailable,
     },
     mic: {
@@ -1271,12 +1087,15 @@ async function exportDiagnostics(): Promise<void> {
     recording: {
       active: isRecording,
       processing: isProcessing,
+      latched: isLatched,
       lastStopReason,
     },
-    inputAssist: {
-      enabled: inputAssistEnabled,
-      interactionActive: inputAssistInteractionActive,
-      hasPendingRewrite: Boolean(pendingRewrite),
+    dock: {
+      view: dock.currentView().kind,
+      visible: dock.isVisible(),
+      rewriteInFlight,
+      hasLastInsertion: Boolean(lastInsertion),
+      lastInsertionAttempt: lastInsertion?.attempt ?? 0,
     },
     lastErrorId,
     settings: {
@@ -1284,7 +1103,6 @@ async function exportDiagnostics(): Promise<void> {
       autoPaste: config.autoPaste,
       cleanupEnabled: config.cleanupEnabled,
       openAtLogin: config.openAtLogin,
-      inputAssistEnabledOnStartup: config.inputAssistEnabledOnStartup,
       transcriptionModel: config.transcriptionModel,
       cleanupModel: config.cleanupModel,
     },
@@ -1299,7 +1117,7 @@ async function exportDiagnostics(): Promise<void> {
   await writeFile(diagnosticsPath, `${JSON.stringify(diagnostics, null, 2)}\n`, "utf8");
   await exportSanitizedLogs(target, exportDir);
   void logger.info("diagnostics.export.success", { exportDir });
-  showStatus("idle", "Diagnostics exported");
+  showDone("Diagnostics exported", "ok", false);
   await shell.showItemInFolder(diagnosticsPath);
 }
 
@@ -1401,11 +1219,11 @@ function formatUserError(message: string, id: string): string {
 
 function formatEmptyRecordingMessage(reason: RecorderStopReason): string {
   if (reason === "silence") {
-    return "Stopped after silence; no speech captured";
+    return "Stopped after silence · no speech captured";
   }
 
   if (reason === "max_duration") {
-    return "Recording limit reached; no speech captured";
+    return "Recording limit reached · no speech captured";
   }
 
   return "No speech captured";

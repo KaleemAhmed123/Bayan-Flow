@@ -10,13 +10,30 @@ const DEFAULT_CONFIG: AppConfig = {
   groqApiKey: "",
   hotkey: "Ctrl+Shift+Space",
   inputAssistHotkey: "Ctrl+Shift+Enter",
-  inputAssistEnabledOnStartup: false,
-  autoPaste: false,
+  showDock: true,
+  autoPaste: true,
   cleanupEnabled: true,
   openAtLogin: false,
   transcriptionModel: "whisper-large-v3",
-  cleanupModel: "llama-3.3-70b-versatile",
+  cleanupModel: "openai/gpt-oss-120b",
 };
+
+/**
+ * Groq retires models and then answers them with 404 `model_not_found`, which
+ * surfaces to the user as polish and rewrite silently failing. Changing the
+ * default alone does not help anyone who already has the old id saved, so load
+ * and save both remap through this table.
+ *
+ * Source: https://console.groq.com/docs/deprecations
+ */
+const RETIRED_MODELS = new Map<string, string>([
+  ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"],
+  ["llama-3.1-70b-versatile", "openai/gpt-oss-120b"],
+  ["llama-3.1-8b-instant", "openai/gpt-oss-20b"],
+  ["qwen/qwen3-32b", "openai/gpt-oss-120b"],
+  ["meta-llama/llama-4-scout-17b-16e-instruct", "openai/gpt-oss-120b"],
+  ["deepseek-r1-distill-llama-70b", "openai/gpt-oss-120b"],
+]);
 
 const DEFAULT_MODEL_PATTERN = /^[a-zA-Z0-9._:/-]+$/;
 const MAX_MODEL_LENGTH = 120;
@@ -73,7 +90,7 @@ export class ConfigStore {
       apiKeyStorage: encryptedApiKey ? "encrypted" : config.groqApiKey ? "plaintext_fallback" : "empty",
       hotkey: config.hotkey,
       inputAssistHotkey: config.inputAssistHotkey,
-      inputAssistEnabledOnStartup: config.inputAssistEnabledOnStartup,
+      showDock: config.showDock,
       autoPaste: config.autoPaste,
       cleanupEnabled: config.cleanupEnabled,
       openAtLogin: config.openAtLogin,
@@ -129,7 +146,7 @@ export function normalizeConfig(input: Partial<AppConfig>): AppConfig {
     groqApiKey: stringOr(input.groqApiKey, process.env.GROQ_API_KEY || ""),
     hotkey: hotkeyOr(input.hotkey, DEFAULT_CONFIG.hotkey),
     inputAssistHotkey: hotkeyOr(input.inputAssistHotkey, DEFAULT_CONFIG.inputAssistHotkey),
-    inputAssistEnabledOnStartup: booleanOr(input.inputAssistEnabledOnStartup, DEFAULT_CONFIG.inputAssistEnabledOnStartup),
+    showDock: booleanOr(input.showDock, DEFAULT_CONFIG.showDock),
     autoPaste: booleanOr(input.autoPaste, DEFAULT_CONFIG.autoPaste),
     cleanupEnabled: booleanOr(input.cleanupEnabled, DEFAULT_CONFIG.cleanupEnabled),
     openAtLogin: booleanOr(input.openAtLogin, DEFAULT_CONFIG.openAtLogin),
@@ -162,5 +179,5 @@ function modelOr(value: unknown, fallback: string): string {
     return fallback;
   }
 
-  return model;
+  return RETIRED_MODELS.get(model) ?? model;
 }
