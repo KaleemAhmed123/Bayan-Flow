@@ -1,12 +1,6 @@
 import type { OperationContext } from "../types.js";
 import type { RecorderStopReason } from "./recorder-ipc-payloads.js";
 
-export type RecorderLike = {
-  start(context?: OperationContext, limits?: { maxDurationMs: number; maxAudioBytes: number }): Promise<void>;
-  stop(context?: OperationContext): Promise<string | null>;
-  destroy(): void;
-};
-
 export type RecorderSessionSnapshot = {
   activeSessionId: string | null;
   isStarting: boolean;
