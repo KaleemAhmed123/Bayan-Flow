@@ -57,7 +57,10 @@ test("normalizes retryable and non-retryable errors", () => {
 
 test("normalizes specific Groq user-facing errors", () => {
   assert.equal(normalizeError("transcription", Object.assign(new Error("Unauthorized"), { status: 401 })).userMessage, "Groq API key was rejected");
-  assert.equal(normalizeError("transcription", Object.assign(new Error("Missing model"), { status: 404 })).userMessage, "Groq model or request is invalid");
+  assert.equal(
+    normalizeError("transcription", Object.assign(new Error("Missing model"), { status: 404 })).userMessage,
+    "That AI model is no longer available. Open Settings to choose another.",
+  );
   assert.equal(normalizeError("transcription", Object.assign(new Error("Too large"), { status: 413 })).userMessage, "Recording is too large");
   assert.equal(normalizeError("cleanup", Object.assign(new Error("Rate limit"), { status: 429 })).userMessage, "Groq is rate limiting requests");
   assert.equal(normalizeError("cleanup", Object.assign(new Error("Offline"), { code: "ENOTFOUND" })).userMessage, "Groq is temporarily unavailable");

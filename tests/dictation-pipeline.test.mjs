@@ -34,7 +34,7 @@ test("dictation pipeline treats cleanup failure as raw transcript fallback", asy
   });
 
   assert.equal(output.status, "cleanup_fallback");
-  assert.equal(fallbackError.userMessage, "Groq model or request is invalid");
+  assert.equal(fallbackError.userMessage, "That AI model is no longer available. Open Settings to choose another.");
   assert.equal(output.result.finalText, "raw words");
   assert.equal(output.result.cleanupFallback, true);
 });

@@ -63,8 +63,14 @@ function getUserMessage(category: ErrorCategory, error: unknown): string {
       return "Recording is too large";
     }
 
-    if (status === 400 || status === 404) {
-      return "Groq model or request is invalid";
+    // Groq answers a retired model id with 404 model_not_found. "Invalid request"
+    // told the user nothing actionable, so name the real problem and the fix.
+    if (status === 404) {
+      return "That AI model is no longer available. Open Settings to choose another.";
+    }
+
+    if (status === 400) {
+      return "Groq rejected the request";
     }
 
     if (status === 429) {
