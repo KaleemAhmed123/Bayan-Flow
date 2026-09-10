@@ -5,6 +5,13 @@ import { normalizeError } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 
 const PASTE_SETTLE_MS = 180;
+const MODIFIER_RELEASE_POLL_MS = 25;
+/**
+ * Ceiling on how long a synthetic shortcut waits for the user's fingers to come
+ * off the hotkey. Past this we fire anyway: a possibly-mangled paste is
+ * recoverable from the clipboard, a silently dropped dictation is not.
+ */
+const MODIFIER_RELEASE_MAX_WAIT_MS = 600;
 const CLIPBOARD_RESTORE_MS = 800;
 const CLIPBOARD_WRITE_ATTEMPTS = 3;
 const CLIPBOARD_WRITE_RETRY_MS = 30;
@@ -24,15 +31,48 @@ export type WindowBounds = {
   height: number;
 };
 
-export type ClipboardTextSource = {
-  scope: "selection" | "whole";
-  text: string;
-};
+/** Window titles belonging to this app. Never a valid destination for our own text. */
+export const OWN_WINDOW_TITLES = ["BayanFlow"];
+
+/**
+ * Rejects windows that cannot be the user's editable app.
+ *
+ * The dock is always-on-top and can be the foreground window right after it is
+ * clicked, so without this the rewrite flow captured BayanFlow itself and then
+ * sent Ctrl+A/Ctrl+C to its own overlay, which reported "no text found".
+ * Untitled windows are rejected for the same reason: real app windows have titles.
+ */
+export function isUsableTarget(target: PasteTarget | null | undefined, ownTitles: string[] = OWN_WINDOW_TITLES): boolean {
+  const title = target?.title?.trim();
+  if (!title) {
+    return false;
+  }
+
+  return !ownTitles.some((own) => title === own || title.startsWith(`${own} `));
+}
 
 type ClipboardLike = {
   readText(): string;
   writeText(text: string): void;
 };
+
+/**
+ * NOTE: dictations deliberately DO appear in clipboard-history tools.
+ *
+ * We tried to exclude them by writing the Windows "do not record" clipboard
+ * formats alongside the text. Electron's `clipboard.writeBuffer` commits the
+ * clipboard as a unit, so the marker REPLACED the text instead of joining it —
+ * which would have silently broken every paste in the app. A self-verifying
+ * probe caught it on the first real run and the attempt was removed.
+ *
+ * Keeping the history entry also turns out to be what we want: when a paste is
+ * blocked and the user then copies something else, clipboard history is the only
+ * remaining way to get the dictation back. Excluding it would have removed a
+ * recovery path to close a leak we could not close anyway.
+ *
+ * A real exclusion would need a native Win32 clipboard write, which is not worth
+ * it against that trade.
+ */
 
 type KeyboardLike = {
   pressKey(...keys: Key[]): Promise<unknown>;
@@ -64,6 +104,48 @@ export class TextInserter {
       restoreDelayMs: CLIPBOARD_RESTORE_MS,
     },
   ) {}
+
+  /**
+   * Registers the check used to tell whether the user is still holding the
+   * hotkey. Optional: with no guard installed every shortcut fires immediately,
+   * which is the previous behaviour and what the unit tests rely on.
+   */
+  setModifierGuard(areModifiersHeld: () => boolean): void {
+    this.areModifiersHeld = areModifiersHeld;
+  }
+
+  private areModifiersHeld: (() => boolean) | null = null;
+
+  /**
+   * Blocks until the hotkey modifiers are released, or the budget runs out.
+   *
+   * Without this, a shortcut sent while the user still holds Ctrl+Shift arrives
+   * at the target app as Ctrl+Shift+V rather than Ctrl+V — "paste as plain text"
+   * in some apps, something unrelated in others. The race is real on the
+   * tap-to-latch path, where the key-up and the paste genuinely compete.
+   *
+   * Costs nothing in the common case: by the time transcription returns the user
+   * has long since let go, the loop never runs, and the method returns at once.
+   */
+  private async waitForModifierRelease(context: OperationContext, eventName: string): Promise<void> {
+    const areModifiersHeld = this.areModifiersHeld;
+    if (!areModifiersHeld || !areModifiersHeld()) {
+      return;
+    }
+
+    const startedAt = Date.now();
+    while (areModifiersHeld() && Date.now() - startedAt < MODIFIER_RELEASE_MAX_WAIT_MS) {
+      await sleep(MODIFIER_RELEASE_POLL_MS);
+    }
+
+    const waitedMs = Date.now() - startedAt;
+    if (areModifiersHeld()) {
+      void logger.warn(`clipboard.${eventName}.modifiers_still_held`, { ...context, waitedMs });
+      return;
+    }
+
+    void logger.info(`clipboard.${eventName}.modifiers_released`, { ...context, waitedMs });
+  }
 
   copyText(text: string, context: OperationContext = {}): void {
     this.deps.clipboard.writeText(text);
@@ -121,10 +203,22 @@ export class TextInserter {
     throw new Error("Could not refocus input window.");
   }
 
-  async captureTextFromTargetByClipboard(
+  /**
+   * Reads both what is selected and the entire input, in that order.
+   *
+   * Ctrl+C alone cannot tell "there is a selection" from "there is no selection".
+   * VS Code copies the current line when nothing is selected, so a copy that
+   * returns text is not proof that a paste would replace anything. Callers get
+   * both values and rewrite through the whole input, where Ctrl+A guarantees a
+   * replace.
+   *
+   * Note this leaves the entire input selected, which is what the following
+   * whole-input replace expects.
+   */
+  async captureSelectionAndWhole(
     expectedTarget: PasteTarget,
     context: OperationContext = {},
-  ): Promise<ClipboardTextSource | null> {
+  ): Promise<{ selection: string | null; whole: string | null }> {
     await this.focusTargetWindow(expectedTarget, context);
     await this.assertActiveTarget(expectedTarget, context);
 
@@ -132,20 +226,14 @@ export class TextInserter {
     const sentinel = createClipboardSentinel();
 
     try {
-      const selectedText = await this.captureClipboardAfterShortcut([Key.LeftControl, Key.C], sentinel, context);
-      if (selectedText?.trim()) {
-        void logger.info("clipboard.capture.success", { ...context, scope: "selection", textChars: selectedText.length });
-        return { scope: "selection", text: selectedText };
-      }
-
-      const wholeText = await this.captureWholeInputByClipboard(sentinel, context);
-      if (wholeText?.trim()) {
-        void logger.info("clipboard.capture.success", { ...context, scope: "whole", textChars: wholeText.length });
-        return { scope: "whole", text: wholeText };
-      }
-
-      void logger.info("clipboard.capture.empty", context);
-      return null;
+      const selection = await this.captureClipboardAfterShortcut([Key.LeftControl, Key.C], sentinel, context);
+      const whole = await this.captureWholeInputByClipboard(sentinel, context);
+      void logger.info("clipboard.capture.pair", {
+        ...context,
+        selectionChars: selection?.length ?? 0,
+        wholeChars: whole?.length ?? 0,
+      });
+      return { selection, whole };
     } finally {
       await this.writeClipboardWithRetry(previousText, context).catch((error) => {
         void logger.warn("clipboard.capture.restore_failed", { ...context, error: normalizeError("paste", error) });
@@ -180,23 +268,23 @@ export class TextInserter {
   }
 
   /**
-   * Sends Ctrl+Z to the target so a fresh paste replaces the previous one.
-   *
-   * Chromium text controls treat a paste as a single undo unit, which covers
-   * VS Code, Brave, WhatsApp, and Notion. Terminals have no undo stack, so there
-   * the new text lands after the old and the caller tells the user.
-   *
-   * ponytail: single undo step, matches a single paste. If a future insertion
-   * path ever writes more than one undo unit, count them and undo that many.
+   * Reads the whole focused input and puts the clipboard back.
+   * Used to check what actually landed in the document before changing it again.
    */
-  async sendUndo(context: OperationContext = {}, expectedTarget?: PasteTarget | null): Promise<void> {
-    if (expectedTarget) {
-      await this.focusTargetWindow(expectedTarget, context);
-    }
+  async captureWholeText(expectedTarget: PasteTarget, context: OperationContext = {}): Promise<string | null> {
+    await this.focusTargetWindow(expectedTarget, context);
+    await this.assertActiveTarget(expectedTarget, context);
 
-    await this.sendKeyboardShortcut([Key.LeftControl, Key.Z], context, "undo");
-    await sleep(PASTE_SETTLE_MS);
-    void logger.info("clipboard.undo.sent", context);
+    const previousText = this.deps.clipboard.readText();
+    const sentinel = createClipboardSentinel();
+
+    try {
+      return await this.captureWholeInputByClipboard(sentinel, context);
+    } finally {
+      await this.writeClipboardWithRetry(previousText, context).catch((error) => {
+        void logger.warn("clipboard.capture_whole.restore_failed", { ...context, error: normalizeError("paste", error) });
+      });
+    }
   }
 
   async replaceWholeTextByClipboard(
@@ -305,6 +393,11 @@ export class TextInserter {
   }
 
   private async sendKeyboardShortcut(keys: Key[], context: OperationContext, eventName: string): Promise<void> {
+    // Every synthetic shortcut routes through here — paste, select-all, and
+    // copy alike — so one guard covers all of them. Ctrl+Shift+A is as wrong as
+    // Ctrl+Shift+V.
+    await this.waitForModifierRelease(context, eventName);
+
     let pressed = false;
     try {
       await this.deps.keyboard.pressKey(...keys);
@@ -364,6 +457,24 @@ function matchesTarget(activeTarget: PasteTarget, expectedTarget: PasteTarget): 
   }
 
   return activeTarget.title === expectedTarget.title;
+}
+
+/**
+ * Swaps the last occurrence of "needle" for "replacement".
+ * Redo rewrites the text it inserted most recently, so when the same phrase
+ * appears twice the later one is the one that was just added.
+ */
+export function replaceLastOccurrence(haystack: string, needle: string, replacement: string): string {
+  if (!needle) {
+    return haystack;
+  }
+
+  const index = haystack.lastIndexOf(needle);
+  if (index === -1) {
+    return haystack;
+  }
+
+  return haystack.slice(0, index) + replacement + haystack.slice(index + needle.length);
 }
 
 function createClipboardSentinel(): string {

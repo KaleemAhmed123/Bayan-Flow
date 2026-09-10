@@ -62,25 +62,44 @@ export function toUiohookHotkey(hotkey: string): GlobalKeyHotkey {
   };
 }
 
+/**
+ * `actual` is a key name derived from a uiohook keycode, so it arrives in that
+ * library's spelling: "CTRL" for the left modifier and "CTRLRIGHT" for the right
+ * one. The "LEFT CTRL" / "RIGHT CTRL" spellings come from other sources.
+ *
+ * The `*RIGHT` forms matter: without them the right-hand Ctrl, Shift, Alt, and
+ * Meta keys match nothing, so a user holding right Shift is invisible to every
+ * caller — the hotkey release check and the modifier guard included.
+ */
 export function matchesGlobalKey(actual: string, expected: string): boolean {
   if (actual === expected) {
     return true;
   }
 
   if (expected === "CTRL") {
-    return actual === "LEFT CTRL" || actual === "RIGHT CTRL" || actual === "LEFT CONTROL" || actual === "RIGHT CONTROL";
+    return (
+      actual === "LEFT CTRL" ||
+      actual === "RIGHT CTRL" ||
+      actual === "LEFT CONTROL" ||
+      actual === "RIGHT CONTROL" ||
+      actual === "CTRLRIGHT"
+    );
   }
 
   if (expected === "SHIFT") {
-    return actual === "LEFT SHIFT" || actual === "RIGHT SHIFT";
+    return actual === "LEFT SHIFT" || actual === "RIGHT SHIFT" || actual === "SHIFTRIGHT";
   }
 
   if (expected === "ALT") {
-    return actual === "LEFT ALT" || actual === "RIGHT ALT";
+    return actual === "LEFT ALT" || actual === "RIGHT ALT" || actual === "ALTRIGHT";
+  }
+
+  if (expected === "COMMAND") {
+    return actual === "LEFT META" || actual === "RIGHT META" || actual === "META" || actual === "METARIGHT";
   }
 
   if (expected === "COMMANDORCONTROL") {
-    return matchesGlobalKey(actual, "CTRL") || actual === "LEFT META" || actual === "RIGHT META";
+    return matchesGlobalKey(actual, "CTRL") || matchesGlobalKey(actual, "COMMAND");
   }
 
   return false;

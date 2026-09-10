@@ -26,6 +26,13 @@ export class HotkeyListener {
   private isPressed = false;
   private isStarted = false;
   private pressedAt = 0;
+  /**
+   * Key names currently held down, by uiohook name. Tracked from raw key events
+   * rather than from the `ctrlKey`/`shiftKey` flags, because on the key-up of a
+   * modifier those flags are ambiguous about whether they describe the state
+   * before or after the event.
+   */
+  private readonly downKeys = new Set<string>();
 
   constructor(
     hotkey: string,
@@ -49,6 +56,10 @@ export class HotkeyListener {
   stop(): void {
     this.hook.off("keydown", this.handleKeyDown);
     this.hook.off("keyup", this.handleKeyUp);
+    // Once detached we stop seeing key-ups, so anything still recorded as down
+    // would be stale forever and permanently stall the modifier guard.
+    this.downKeys.clear();
+    this.isPressed = false;
 
     if (this.isStarted) {
       this.hook.stop();
@@ -57,8 +68,24 @@ export class HotkeyListener {
     }
   }
 
+  /**
+   * True while any modifier belonging to this hotkey is still physically held.
+   *
+   * Synthetic shortcuts consult this before firing. Sending Ctrl+V while the
+   * user still holds Ctrl+Shift delivers Ctrl+Shift+V to the target app, which
+   * is "paste as plain text" in some apps and an unrelated command in others.
+   */
+  areHotkeyModifiersDown(): boolean {
+    return this.hotkey.modifiers.some((modifier) =>
+      [...this.downKeys].some((downKey) => matchesGlobalKey(downKey, modifier)),
+    );
+  }
+
   private readonly handleKeyDown = (event: UiohookKeyboardEvent): void => {
     const eventName = getEventKeyName(event);
+    if (eventName) {
+      this.downKeys.add(eventName);
+    }
 
     if (!this.isPressed && matchesGlobalKey(eventName, this.hotkey.key) && this.areModifiersDown(event)) {
       this.isPressed = true;
@@ -69,6 +96,7 @@ export class HotkeyListener {
 
   private readonly handleKeyUp = (event: UiohookKeyboardEvent): void => {
     const eventName = getEventKeyName(event);
+    this.downKeys.delete(eventName);
 
     if (this.isPressed && this.isComboKey(eventName)) {
       const heldMs = this.pressedAt ? Date.now() - this.pressedAt : 0;
