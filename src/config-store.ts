@@ -4,6 +4,7 @@ import { app, safeStorage } from "./electron.js";
 import { parseHotkey } from "./hotkey/hotkey-parser.js";
 import { logger } from "./observability/app-logger.js";
 import { normalizeError } from "./observability/errors.js";
+import { DEFAULT_CONTEXT_BLOCKLIST, parseBlocklist, serializeBlocklist } from "./context/context-rules.js";
 import type { AppConfig } from "./types.js";
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -12,11 +13,43 @@ const DEFAULT_CONFIG: AppConfig = {
   inputAssistHotkey: "Ctrl+Shift+Enter",
   showDock: true,
   autoPaste: true,
+  historyEnabled: true,
   cleanupEnabled: true,
   openAtLogin: false,
   transcriptionModel: "whisper-large-v3",
   cleanupModel: "openai/gpt-oss-120b",
+  // A smaller sibling of the primary: different capacity class, so a rate limit
+  // on one is unlikely to apply to the other.
+  cleanupFallbackModel: "openai/gpt-oss-20b",
+  transcriptionLanguage: "",
+  outputLanguage: "",
+  customVocabulary: "",
+  // Metadata context is on by default: a window title is a small exposure and a
+  // large quality win. The screenshot is the opposite trade, so it is opt-in.
+  contextCaptureEnabled: true,
+  contextScreenshotEnabled: false,
+  contextModel: "qwen/qwen3.6-27b",
+  contextBlocklist: serializeBlocklist(DEFAULT_CONTEXT_BLOCKLIST),
+  microphoneId: "",
+  preserveExactWording: false,
+  instructionGuardEnabled: true,
+  debugCaptureEnabled: false,
 };
+
+/**
+ * Language tags we accept, e.g. "en", "ur", "pt-BR". Deliberately permissive
+ * about the exact tag: providers disagree on which ones they support, and a tag
+ * the provider rejects produces a clear API error, whereas an over-strict
+ * allowlist here silently drops a language the user actually needs.
+ */
+const LANGUAGE_TAG_PATTERN = /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})?$/;
+
+/** Whole-field ceiling, so a paste accident cannot balloon every prompt we send. */
+const MAX_VOCABULARY_CHARS = 2_000;
+/** Per-term ceiling. A "term" longer than this is a sentence, not a vocabulary entry. */
+export const MAX_VOCABULARY_TERM_CHARS = 80;
+/** Term count ceiling. Beyond this the list stops helping the model and starts confusing it. */
+export const MAX_VOCABULARY_TERMS = 100;
 
 /**
  * Groq retires models and then answers them with 404 `model_not_found`, which
@@ -92,10 +125,25 @@ export class ConfigStore {
       inputAssistHotkey: config.inputAssistHotkey,
       showDock: config.showDock,
       autoPaste: config.autoPaste,
+      historyEnabled: config.historyEnabled,
       cleanupEnabled: config.cleanupEnabled,
       openAtLogin: config.openAtLogin,
       transcriptionModel: config.transcriptionModel,
       cleanupModel: config.cleanupModel,
+      cleanupFallbackModel: config.cleanupFallbackModel || "none",
+      transcriptionLanguage: config.transcriptionLanguage || "auto",
+      outputLanguage: config.outputLanguage || "same",
+      // A count, never the terms themselves: vocabulary is user content and the
+      // logger's job is to stay free of it.
+      vocabularyTerms: parseVocabularyTerms(config.customVocabulary).length,
+      contextCaptureEnabled: config.contextCaptureEnabled,
+      contextScreenshotEnabled: config.contextScreenshotEnabled,
+      contextModel: config.contextModel,
+      contextBlocklistPatterns: parseBlocklist(config.contextBlocklist).length,
+      hasMicrophoneId: Boolean(config.microphoneId),
+      preserveExactWording: config.preserveExactWording,
+      instructionGuardEnabled: config.instructionGuardEnabled,
+      debugCaptureEnabled: config.debugCaptureEnabled,
     });
   }
 }
@@ -148,11 +196,89 @@ export function normalizeConfig(input: Partial<AppConfig>): AppConfig {
     inputAssistHotkey: hotkeyOr(input.inputAssistHotkey, DEFAULT_CONFIG.inputAssistHotkey),
     showDock: booleanOr(input.showDock, DEFAULT_CONFIG.showDock),
     autoPaste: booleanOr(input.autoPaste, DEFAULT_CONFIG.autoPaste),
+    historyEnabled: booleanOr(input.historyEnabled, DEFAULT_CONFIG.historyEnabled),
     cleanupEnabled: booleanOr(input.cleanupEnabled, DEFAULT_CONFIG.cleanupEnabled),
     openAtLogin: booleanOr(input.openAtLogin, DEFAULT_CONFIG.openAtLogin),
     transcriptionModel: modelOr(input.transcriptionModel, DEFAULT_CONFIG.transcriptionModel),
     cleanupModel: modelOr(input.cleanupModel, DEFAULT_CONFIG.cleanupModel),
+    // An empty fallback is a legitimate choice, so it is not replaced by the
+    // default the way an invalid one is.
+    cleanupFallbackModel: optionalModelOr(input.cleanupFallbackModel, DEFAULT_CONFIG.cleanupFallbackModel),
+    transcriptionLanguage: languageOr(input.transcriptionLanguage),
+    outputLanguage: languageOr(input.outputLanguage),
+    customVocabulary: normalizeVocabulary(input.customVocabulary),
+    contextCaptureEnabled: booleanOr(input.contextCaptureEnabled, DEFAULT_CONFIG.contextCaptureEnabled),
+    contextScreenshotEnabled: booleanOr(input.contextScreenshotEnabled, DEFAULT_CONFIG.contextScreenshotEnabled),
+    contextModel: modelOr(input.contextModel, DEFAULT_CONFIG.contextModel),
+    // An empty blocklist is a real choice, but a MISSING one is not the same
+    // thing: an older config that predates this setting must get the defaults,
+    // not silently end up with no protection at all.
+    contextBlocklist:
+      typeof input.contextBlocklist === "string"
+        ? serializeBlocklist(parseBlocklist(input.contextBlocklist))
+        : DEFAULT_CONFIG.contextBlocklist,
+    // Device ids are opaque browser strings, so the only sane validation is a
+    // length cap; a stale id is handled at record time, not here.
+    microphoneId: typeof input.microphoneId === "string" ? input.microphoneId.trim().slice(0, 200) : "",
+    preserveExactWording: booleanOr(input.preserveExactWording, DEFAULT_CONFIG.preserveExactWording),
+    instructionGuardEnabled: booleanOr(input.instructionGuardEnabled, DEFAULT_CONFIG.instructionGuardEnabled),
+    debugCaptureEnabled: booleanOr(input.debugCaptureEnabled, DEFAULT_CONFIG.debugCaptureEnabled),
   };
+}
+
+/**
+ * Splits the stored vocabulary blob into clean terms. One place, so the Settings
+ * field, the transcription prompt, and the cleanup prompt can never disagree
+ * about what counts as a term.
+ */
+export function parseVocabularyTerms(vocabulary: string): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+
+  for (const line of vocabulary.split(/[\r\n]+/)) {
+    const term = line.trim();
+    if (!term || term.length > MAX_VOCABULARY_TERM_CHARS) {
+      continue;
+    }
+
+    // Case-insensitive de-dupe, but the first spelling wins — the user typed
+    // "GitHub" deliberately and we must not fold it into a later "github".
+    const key = term.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    terms.push(term);
+    if (terms.length >= MAX_VOCABULARY_TERMS) {
+      break;
+    }
+  }
+
+  return terms;
+}
+
+function normalizeVocabulary(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+
+  return parseVocabularyTerms(value.slice(0, MAX_VOCABULARY_CHARS)).join("\n");
+}
+
+function languageOr(value: unknown): string {
+  const language = typeof value === "string" ? value.trim() : "";
+  // Empty is the meaningful default (auto-detect / no translation), so an
+  // unrecognised tag falls back to empty rather than to a guess.
+  return LANGUAGE_TAG_PATTERN.test(language) ? language : "";
+}
+
+function optionalModelOr(value: unknown, fallback: string): string {
+  if (typeof value === "string" && !value.trim()) {
+    return "";
+  }
+
+  return modelOr(value, fallback);
 }
 
 function hotkeyOr(value: unknown, fallback: string): string {

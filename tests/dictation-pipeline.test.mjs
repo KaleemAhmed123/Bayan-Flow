@@ -55,7 +55,7 @@ test("dictation pipeline lets transcription failure fail hard", async () => {
   );
 });
 
-test("dictation pipeline requests english transcription options", async () => {
+test("dictation pipeline defaults to auto-detect rather than forcing a language", async () => {
   let capturedOptions;
   const output = await runDictationPipelineWithProviders({
     audioPath: "audio.webm",
@@ -83,7 +83,53 @@ test("dictation pipeline requests english transcription options", async () => {
   });
 
   assert.equal(output.result.finalText, "raw words");
-  assert.deepEqual(capturedOptions, { language: "en" });
+  // Empty language means auto-detect. Forcing "en" made the app useless for
+  // anyone dictating in another language and degraded accented English.
+  assert.deepEqual(capturedOptions, { language: "", vocabulary: undefined });
+});
+
+test("dictation pipeline forwards language and vocabulary when configured", async () => {
+  let transcriptionOptions;
+  let cleanupOptions;
+
+  await runDictationPipelineWithProviders({
+    audioPath: "audio.webm",
+    context: { sessionId: "s1" },
+    cleanupEnabled: true,
+    transcriptionRequestId: "t1",
+    cleanupRequestId: "c1",
+    transcriptionLanguage: "ur",
+    outputLanguage: "en",
+    vocabulary: ["Aysha", "BayanFlow"],
+    transcription: {
+      transcribe: async (_audioPath, _context, options) => {
+        transcriptionOptions = options;
+        return {
+          text: "raw words",
+          language: "ur",
+          segments: [],
+          confidence: {
+            weakSegmentCount: 0,
+            averageLogprob: null,
+            highNoSpeechSegmentCount: 0,
+            bucket: "strong",
+            retried: false,
+          },
+        };
+      },
+    },
+    cleanup: {
+      clean: async (_input, options) => {
+        cleanupOptions = options;
+        return "clean words";
+      },
+    },
+  });
+
+  assert.equal(transcriptionOptions.language, "ur");
+  assert.deepEqual(transcriptionOptions.vocabulary, ["Aysha", "BayanFlow"]);
+  assert.equal(cleanupOptions.outputLanguage, "en");
+  assert.deepEqual(cleanupOptions.vocabulary, ["Aysha", "BayanFlow"]);
 });
 
 test("dictation pipeline reports user-facing processing stages", async () => {

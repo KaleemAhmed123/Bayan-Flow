@@ -30,7 +30,7 @@ try {
   writeEarlyFailure("require.electron.failed", error);
 }
 
-import("./main.js").catch((error) => {
+import("./main.bundle.js").catch((error) => {
   writeEarlyFailure("import.main.failed", error);
   process.exitCode = 1;
 });

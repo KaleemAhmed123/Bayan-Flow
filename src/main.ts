@@ -2,17 +2,28 @@ import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promi
 import { appendFileSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { assetsDir } from "./app-paths.js";
 import { AudioRecorder } from "./audio/audio-recorder.js";
 import { GroqCleanupProvider } from "./cleanup/groq-cleanup-provider.js";
-import { ConfigStore } from "./config-store.js";
+import {
+  ConfigStore,
+  MAX_VOCABULARY_TERMS,
+  MAX_VOCABULARY_TERM_CHARS,
+  parseVocabularyTerms,
+} from "./config-store.js";
+import { ModelCooldownManager } from "./llm/model-cooldown.js";
+import { AppContextService } from "./context/context-service.js";
+import { writeCase, type DebugCase } from "./debug/case-export.js";
+import { appNameFromTitle, parseBlocklist } from "./context/context-rules.js";
 import { runDictationPipelineWithProviders } from "./dictation/dictation-pipeline.js";
-import { app, crashReporter, Menu, nativeImage, shell, Tray } from "./electron.js";
+import { app, clipboard, crashReporter, dialog, Menu, nativeImage, shell, Tray } from "./electron.js";
+import { HistoryStore } from "./history/history-store.js";
 import { HotkeyListener } from "./hotkey/hotkey-listener.js";
 import { classifyPress } from "./hotkey/hotkey-parser.js";
-import { TextInserter } from "./insertion/text-inserter.js";
+import { TextInserter, isUsableTarget, replaceLastOccurrence } from "./insertion/text-inserter.js";
 import { configureLogger, logger } from "./observability/app-logger.js";
-import { normalizeError, type ErrorCategory, type NormalizedError } from "./observability/errors.js";
+import { normalizeError, setOnlineChecker, type ErrorCategory, type NormalizedError } from "./observability/errors.js";
+import { isOnline, startNetworkMonitor } from "./observability/network-monitor.js";
 import { sanitize } from "./observability/logger.js";
 import { OverlayDock } from "./overlay/overlay-dock.js";
 import {
@@ -23,6 +34,7 @@ import {
 } from "./overlay/overlay-state.js";
 import { GroqRewriteProvider } from "./rewrite/groq-rewrite-provider.js";
 import {
+  MAX_REWRITE_INPUT_CHARS,
   buildRedoInstruction,
   getDockMenuActions,
   getRewriteAction,
@@ -32,10 +44,10 @@ import {
 import { SettingsWindow } from "./settings-window.js";
 import { GroqTranscriptionService } from "./transcription/groq-transcription-service.js";
 import type { AppConfig, DictationResult, OperationContext, RuntimeState } from "./types.js";
+import type { AppContextSnapshot } from "./context/context-rules.js";
 import type { PasteTarget } from "./insertion/text-inserter.js";
 import type { RecorderStopReason } from "./audio/recorder-ipc-payloads.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAX_RECORDING_DURATION_MS = 5 * 60 * 1_000;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const STALE_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
@@ -52,7 +64,11 @@ let rewriteInFlight = false;
 let activeSessionId: string | null = null;
 let activePasteTarget: PasteTarget | null = null;
 let rewriteTarget: PasteTarget | null = null;
+/** Last window that was genuinely the user's app, used when a capture returns our own overlay. */
+let lastGoodTarget: PasteTarget | null = null;
 let recordingLimitTimer: NodeJS.Timeout | null = null;
+/** Wall-clock start of the current recording, used for the history duration. */
+let recordingStartedAt = 0;
 let hotkeyAvailable = false;
 let lastErrorId = "";
 let lastMicError = "";
@@ -63,6 +79,21 @@ let lastPasteTargetCaptured = false;
 let lastPasteUsedHandle = false;
 let lastStopReason: RecorderStopReason | "" = "";
 let configStore: ConfigStore;
+let historyStore: HistoryStore;
+let modelCooldown: ModelCooldownManager;
+
+/**
+ * The last dictation, kept only while debug capture is switched on.
+ *
+ * Holding this is the whole point of the setting, and the reason it is off by
+ * default: it is the one place in the app that deliberately retains what
+ * everything else refuses to store.
+ */
+let lastDebugCase: DebugCase | null = null;
+/** Context actually used by the last cleanup, captured for the debug case. */
+let lastUsedAppContext: AppContextSnapshot | null = null;
+/** True when the guard rejected the last cleanup output. */
+let lastGuardTripped = false;
 
 /** Retry closure for the dock's "Try again" recovery button. */
 let lastRetry: (() => Promise<void>) | null = null;
@@ -71,9 +102,11 @@ let lastRetry: (() => Promise<void>) | null = null;
 let dockSnoozeTimer: NodeJS.Timeout | null = null;
 
 /**
- * What was last written into the user's document. Redo rewrites `transcript`
- * (the original speech), undoes the paste, and pastes the new version, so
- * repeated Redos never compound on an already-rewritten string.
+ * What was last written into the user's document.
+ *
+ * Redo always rewrites `transcript` (the original speech), never the text it
+ * produced last time, so repeated Redos cannot compound. `insertedText` is what
+ * currently sits in the document, which is how Redo finds and replaces it.
  */
 let lastInsertion: {
   transcript: string;
@@ -81,12 +114,15 @@ let lastInsertion: {
   target: PasteTarget | null;
   attempt: number;
   pasted: boolean;
+  /** Absent for dictation, where Redo re-polishes the raw transcript instead. */
+  action?: { id: RewriteActionId; label: string; customInstruction?: string };
 } | null = null;
 
 let providerCache: {
   apiKey: string;
   transcriptionModel: string;
   cleanupModel: string;
+  cleanupFallbackModel: string;
   transcription: GroqTranscriptionService;
   cleanup: GroqCleanupProvider;
   rewrite: GroqRewriteProvider;
@@ -94,6 +130,26 @@ let providerCache: {
 
 const recorder = new AudioRecorder();
 const inserter = new TextInserter();
+// Both hotkeys can be the one still under the user's fingers when we paste, so
+// either holding its modifiers is enough to make a synthetic shortcut wait.
+// Read through the module bindings rather than captured values, because
+// restartHotkeyListeners() replaces the listener objects on every settings save.
+inserter.setModifierGuard(
+  () =>
+    Boolean(hotkeyListener?.areHotkeyModifiersDown()) ||
+    Boolean(rewriteHotkeyListener?.areHotkeyModifiersDown()),
+);
+/**
+ * Reads the window signals from the paste target we already captured at the top
+ * of `startRecording`, rather than querying the OS a second time. One window
+ * lookup, two consumers, and no chance of the two disagreeing about which window
+ * the user was actually in.
+ */
+const contextService = new AppContextService(async () => {
+  const title = activePasteTarget?.title ?? "";
+  return title ? { title, appName: appNameFromTitle(title) } : null;
+});
+
 const dock = new OverlayDock({
   onCancel: () => void cancelRecording(),
   onStop: () => void stopRecording(),
@@ -121,6 +177,11 @@ try {
   // Fall back to Electron's default userData path if appData is unavailable early in startup.
 }
 configStore = new ConfigStore();
+historyStore = new HistoryStore();
+// Constructed after userData is settled, because it reads its persisted daily
+// limits from there. One instance for the whole app: rate limits are per
+// account, so every provider must consult and update the same state.
+modelCooldown = new ModelCooldownManager();
 
 if (!app.requestSingleInstanceLock()) {
   writeEarlyStartupDiagnostic("single_instance.already_running");
@@ -146,6 +207,8 @@ try {
 app.whenReady()
   .then(async () => {
     logDir = configureLogger(app.getPath("userData"));
+    startNetworkMonitor();
+    setOnlineChecker(isOnline);
     void logger.info("app.startup.begin");
     await cleanupStaleTempAudio();
     config = await configStore.load();
@@ -174,8 +237,16 @@ app.whenReady()
 
     const settingsWindow = new SettingsWindow(
       configStore,
+      historyStore,
       async (nextConfig) => {
+        const debugCaptureWasOn = config.debugCaptureEnabled;
         config = nextConfig;
+        // Turning the setting off must drop what it was holding, or the audio
+        // outlives the consent that allowed us to keep it.
+        if (debugCaptureWasOn && !config.debugCaptureEnabled) {
+          await discardDebugCase();
+        }
+
         applyLoginItemSettings(config);
         warmDictationProviders(config);
         restartHotkeyListeners();
@@ -204,6 +275,7 @@ app.whenReady()
           throw error;
         }
       },
+      () => recorder.listMicrophones(),
     );
     settingsWindowRef = settingsWindow;
 
@@ -270,6 +342,29 @@ function showFailure(failure: DockFailure, message: string, retry?: () => Promis
 }
 
 /**
+ * Captures the window to act on, refusing our own overlay.
+ *
+ * The dock can be the foreground window immediately after the user clicks it, so
+ * a raw capture sometimes returns BayanFlow instead of the app being typed into.
+ * When that happens the last known good window is the right answer: it is the
+ * app the user was actually working in.
+ */
+async function captureTarget(requestId: string): Promise<PasteTarget | null> {
+  const captured = await inserter.captureActiveTarget({ requestId });
+  if (isUsableTarget(captured)) {
+    lastGoodTarget = captured;
+    return captured;
+  }
+
+  void logger.warn("target.capture.rejected", {
+    requestId,
+    titleChars: captured?.title.length ?? 0,
+    reusedPrevious: Boolean(lastGoodTarget),
+  });
+  return lastGoodTarget;
+}
+
+/**
  * The pill is shown whenever the user wants it and it is not snoozed. Its dot
  * turns grey when the app is not actually ready to dictate.
  */
@@ -313,6 +408,12 @@ async function toggleShowDock(): Promise<void> {
  * dock must offer Settings rather than a Try again button that cannot work.
  */
 function failureForGroqError(normalized: NormalizedError, fallback: DockFailure): DockFailure {
+  // Checked first: an offline machine produces provider-shaped errors, and
+  // telling the user their provider is down sends them to the wrong place.
+  if (!normalized.status && !isOnline()) {
+    return "offline";
+  }
+
   if (normalized.status === 404) {
     return "model_unavailable";
   }
@@ -404,6 +505,10 @@ function updateTrayMenu(settingsWindow: SettingsWindow): void {
         checked: config.autoPaste,
         click: () => void toggleAutoPaste(),
       },
+      { label: "Add clipboard word to vocabulary", click: () => void addClipboardWordToVocabulary() },
+      ...(config.debugCaptureEnabled
+        ? [{ label: "Export last dictation for debugging", click: () => void exportDebugCase() }]
+        : []),
       { label: "Settings", click: () => void settingsWindow.show() },
       { label: "Open Logs Folder", click: () => void openLogsFolder() },
       { label: "Export Diagnostics", click: () => void exportDiagnostics() },
@@ -579,18 +684,32 @@ async function startRecording(): Promise<void> {
   }
 
   isRecording = true;
+  recordingStartedAt = Date.now();
   activeSessionId = createId("session");
   const context = currentContext();
-  activePasteTarget = await inserter.captureActiveTarget(context);
+  activePasteTarget = await captureTarget(context.sessionId ?? createId("dictation-target"));
   lastPasteTargetCaptured = Boolean(activePasteTarget);
   lastPasteUsedHandle = activePasteTarget?.handle !== null && activePasteTarget?.handle !== undefined;
   lastStopReason = "";
+  // Fired here, while the microphone opens, so it runs alongside the user
+  // speaking instead of adding a second to the wait after they stop.
+  contextService.start(
+    {
+      enabled: config.contextCaptureEnabled,
+      screenshotEnabled: config.contextScreenshotEnabled,
+      model: config.contextModel,
+      blocklist: parseBlocklist(config.contextBlocklist),
+      apiKey: config.groqApiKey,
+    },
+    context,
+  );
   refreshTray();
   showListening();
   void logger.info("dictation.start", context);
 
   try {
     await recorder.start(context, {
+      microphoneId: config.microphoneId,
       maxDurationMs: MAX_RECORDING_DURATION_MS + 10_000,
       maxAudioBytes: MAX_AUDIO_BYTES,
     });
@@ -623,6 +742,7 @@ async function cancelRecording(): Promise<void> {
   isLatched = false;
   isProcessing = true;
   clearRecordingLimitTimer();
+  contextService.cancel();
   dock.showRest();
   const context = currentContext();
   void logger.info("dictation.cancel", context);
@@ -655,6 +775,7 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
   refreshTray();
 
   let audioPath: string | null = null;
+  let pipelineResult: DictationResult | null = null;
   let failureCategory: ErrorCategory = "recorder";
   let failureKind: DockFailure = "recorder";
   const context = currentContext();
@@ -676,14 +797,28 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
 
     failureCategory = "transcription";
     failureKind = "transcription";
+    lastUsedAppContext = null;
+    lastGuardTripped = false;
     await assertAudioWithinLimits(audioPath);
     const pipelineStartedAt = Date.now();
     const result = await runDictationPipeline(audioPath, context);
+    pipelineResult = result;
     pipelineMs = Date.now() - pipelineStartedAt;
     if (!result.finalText) {
       void logger.info("dictation.no_text", context);
       showDone("No text detected", "warn", false);
       return;
+    }
+
+    // Fire and forget on purpose: append() never rejects, and history is a
+    // convenience that must not add a single millisecond before the paste.
+    if (config.historyEnabled) {
+      void historyStore.append({
+        seconds: recordingStartedAt > 0 ? (latencyStartedAt - recordingStartedAt) / 1000 : 0,
+        app: activePasteTarget?.title ?? "",
+        raw: result.rawText,
+        polished: result.finalText,
+      });
     }
 
     failureCategory = "paste";
@@ -722,11 +857,107 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
     });
     isProcessing = false;
     if (audioPath) {
-      await deleteTempAudio(audioPath, context);
+      if (config.debugCaptureEnabled) {
+        await retainDebugCase(audioPath, pipelineResult, context, latencyStartedAt);
+      } else {
+        await deleteTempAudio(audioPath, context);
+      }
     }
     activeSessionId = null;
     activePasteTarget = null;
     refreshTray();
+  }
+}
+
+/**
+ * Keeps the last dictation for export, and drops the one before it.
+ *
+ * Exactly one case is retained at a time. The alternative is an ever-growing
+ * pile of audio on disk holding everything the user has ever said, which is the
+ * opposite of what the rest of the app promises.
+ */
+async function retainDebugCase(
+  audioPath: string,
+  result: DictationResult | null,
+  context: OperationContext,
+  startedAt: number,
+): Promise<void> {
+  const previousAudio = lastDebugCase?.audioPath;
+  if (previousAudio && previousAudio !== audioPath) {
+    await deleteTempAudio(previousAudio, context);
+  }
+
+  lastDebugCase = {
+    at: Date.now(),
+    audioPath,
+    rawText: result?.rawText ?? "",
+    finalText: result?.finalText ?? "",
+    transcriptionModel: config.transcriptionModel,
+    cleanupModel: config.cleanupModel,
+    cleanupFallbackModel: config.cleanupFallbackModel,
+    transcriptionLanguage: config.transcriptionLanguage,
+    outputLanguage: config.outputLanguage,
+    vocabulary: parseVocabularyTerms(config.customVocabulary),
+    appContext: lastUsedAppContext,
+    cleanupEnabled: config.cleanupEnabled,
+    preserveExactWording: config.preserveExactWording,
+    durationMs: Date.now() - startedAt,
+    cleanupError: result?.cleanupFallback ? "cleanup failed; raw transcript inserted" : undefined,
+    instructionGuardTripped: lastGuardTripped,
+  };
+
+  void logger.info("debug.case.retained", { ...context, hasAudio: true });
+}
+
+/**
+ * Writes the retained dictation to a folder the user picks.
+ *
+ * Only ever reachable from an explicit menu action, and only when the setting is
+ * on. There is no automatic upload and no default location: the user chooses
+ * where their own words go.
+ */
+/** Drops the retained case and its audio. */
+async function discardDebugCase(): Promise<void> {
+  const audioPath = lastDebugCase?.audioPath;
+  lastDebugCase = null;
+  if (audioPath) {
+    await deleteTempAudio(audioPath, currentContext());
+  }
+
+  void logger.info("debug.case.discarded");
+}
+
+async function exportDebugCase(): Promise<void> {
+  if (!config.debugCaptureEnabled) {
+    showDone("Turn on Capture dictations for debugging in Settings first", "warn", false);
+    return;
+  }
+
+  if (!lastDebugCase) {
+    showDone("Nothing captured yet · dictate once, then export", "warn", false);
+    return;
+  }
+
+  const picked = await dialog.showOpenDialog({
+    title: "Where should the debug case be saved?",
+    properties: ["openDirectory", "createDirectory"],
+    buttonLabel: "Save case here",
+  });
+
+  if (picked.canceled || !picked.filePaths[0]) {
+    return;
+  }
+
+  try {
+    const caseDir = await writeCase(picked.filePaths[0], lastDebugCase);
+    void logger.info("debug.case.exported");
+    showDone("Debug case saved", "ok", false);
+    await shell.openPath(caseDir);
+  } catch (error) {
+    const normalized = normalizeError("config", error);
+    lastErrorId = normalized.id;
+    void logger.error("debug.case.export_failed", { error: normalized });
+    showFailure("generic", "Could not save the debug case.");
   }
 }
 
@@ -778,6 +1009,48 @@ async function insertOrCopyText(result: DictationResult, context: OperationConte
   }
 }
 
+/**
+ * Adds whatever is on the clipboard to the custom vocabulary.
+ *
+ * This lives in the tray menu rather than only in Settings on purpose. The
+ * moment somebody notices a name came out wrong is the only moment they will
+ * ever actually add it; making them open Settings and find a textarea means the
+ * field stays empty forever.
+ */
+async function addClipboardWordToVocabulary(): Promise<void> {
+  // First line only: people copy a word, but they also copy a word with a
+  // trailing newline, and occasionally a whole paragraph by accident.
+  const term = (clipboard.readText() || "").split(/[\r\n]+/)[0]?.trim() ?? "";
+
+  if (!term) {
+    showDone("Clipboard is empty · copy a word first", "warn", false);
+    return;
+  }
+
+  if (term.length > MAX_VOCABULARY_TERM_CHARS) {
+    showDone("That is too long for a vocabulary term", "warn", false);
+    return;
+  }
+
+  const terms = parseVocabularyTerms(config.customVocabulary);
+  if (terms.some((existing) => existing.toLowerCase() === term.toLowerCase())) {
+    showDone(`Already in vocabulary · ${term}`, "ok", false);
+    return;
+  }
+
+  if (terms.length >= MAX_VOCABULARY_TERMS) {
+    showDone(`Vocabulary is full at ${MAX_VOCABULARY_TERMS} terms · remove one in Settings`, "warn", false);
+    return;
+  }
+
+  config = { ...config, customVocabulary: [...terms, term].join("\n") };
+  await configStore.save(config);
+  // The term reaches the model through the prompt, which is rebuilt per request,
+  // so nothing needs re-warming — but the count is worth recording.
+  showDone(`Added to vocabulary · ${term}`, "ok", false);
+  void logger.info("settings.vocabulary.added", { termChars: term.length, totalTerms: terms.length + 1 });
+}
+
 async function toggleAutoPaste(): Promise<void> {
   config = { ...config, autoPaste: !config.autoPaste };
   await configStore.save(config);
@@ -813,9 +1086,22 @@ async function redoLastInsertion(): Promise<void> {
   showWorking(`Rewriting · attempt ${insertion.attempt}`);
 
   try {
+    // Redo repeats whatever produced the text. After Shorten it shortens again
+    // with different wording; after a dictation there is no action, so it
+    // re-polishes the raw transcript. Previously every Redo ran the same generic
+    // rewrite, which is why a Shorten came back as something unrelated.
+    const previous = insertion.action;
+    const vocabulary = parseVocabularyTerms(config.customVocabulary);
     const rewritten = await getRewriteProvider(config).rewrite(
       insertion.transcript,
-      { actionId: "custom", customInstruction: buildRedoInstruction(insertion.attempt) },
+      previous
+        ? {
+            actionId: previous.id,
+            customInstruction: previous.customInstruction,
+            attempt: insertion.attempt,
+            vocabulary,
+          }
+        : { actionId: "custom", customInstruction: buildRedoInstruction(insertion.attempt), vocabulary },
       context,
     );
 
@@ -826,11 +1112,27 @@ async function redoLastInsertion(): Promise<void> {
       return;
     }
 
-    await inserter.sendUndo(context, insertion.target);
-    await inserter.pasteText(rewritten, context, insertion.target);
+    // Ctrl+Z used to be the mechanism here. It is unverifiable: when the host
+    // app did not undo, the new version was pasted after the old one and every
+    // Redo stacked another paraphrase. Instead, read the input back, splice the
+    // previous insertion out of it, and write the result through the checked
+    // whole-input path. If the old text is not there, nothing is overwritten.
+    const replaced = await replaceInsertedText(insertion, rewritten, context);
+    if (!replaced) {
+      inserter.copyText(rewritten, context);
+      insertion.insertedText = rewritten;
+      showFailure("paste_blocked", "Could not find the previous text to replace. New version copied — press Ctrl+V.");
+      return;
+    }
+
     insertion.insertedText = rewritten;
-    showDone(`Replaced · attempt ${insertion.attempt}`, "ok", true);
-    void logger.info("redo.success", { attempt: insertion.attempt, outputChars: rewritten.length });
+    const label = insertion.action ? insertion.action.label : "Polish";
+    showDone(`${label} · attempt ${insertion.attempt}`, "ok", true);
+    void logger.info("redo.success", {
+      attempt: insertion.attempt,
+      actionId: insertion.action?.id ?? "dictation",
+      outputChars: rewritten.length,
+    });
   } catch (error) {
     const normalized = normalizeError("cleanup", error);
     lastErrorId = normalized.id;
@@ -841,6 +1143,43 @@ async function redoLastInsertion(): Promise<void> {
     rewriteInFlight = false;
     refreshTray();
   }
+}
+
+/**
+ * Swaps the text Redo inserted last time for a new version, without trusting an
+ * undo that may never have happened.
+ *
+ * Returns false when the previous text is no longer in the input, or the input
+ * is too large to rewrite wholesale. The caller then copies instead of guessing.
+ */
+async function replaceInsertedText(
+  insertion: NonNullable<typeof lastInsertion>,
+  nextText: string,
+  context: OperationContext,
+): Promise<boolean> {
+  const target = insertion.target;
+  if (!target) {
+    return false;
+  }
+
+  const whole = await inserter.captureWholeText(target, context);
+  if (!whole || !whole.includes(insertion.insertedText)) {
+    void logger.warn("redo.previous_text_missing", {
+      ...context,
+      wholeChars: whole?.length ?? 0,
+      previousChars: insertion.insertedText.length,
+    });
+    return false;
+  }
+
+  if (whole.length > MAX_REWRITE_INPUT_CHARS) {
+    void logger.warn("redo.input_too_large", { ...context, wholeChars: whole.length });
+    return false;
+  }
+
+  const next = replaceLastOccurrence(whole, insertion.insertedText, nextText);
+  await inserter.replaceWholeTextByClipboard(whole, next, target, context);
+  return true;
 }
 
 /* ------------------------------------------------------------------ *
@@ -860,13 +1199,16 @@ async function openRewriteMenu(): Promise<void> {
 
   // Capture the target BEFORE the menu takes focus, otherwise the active
   // window becomes the dock itself.
-  rewriteTarget = await inserter.captureActiveTarget({ requestId: createId("rewrite-target") });
+  rewriteTarget = await captureTarget(createId("rewrite-target"));
+  if (!rewriteTarget) {
+    showFailure("generic", "Click into the text box first, then press the rewrite hotkey.");
+    return;
+  }
 
   dock.setView({
     kind: "menu",
     actions: getDockMenuActions(),
-    expanded: false,
-    note: rewriteTarget ? "Rewrites the text in your last input" : "No input detected · result will be copied",
+    note: "Rewrites the text in your last input",
   });
 }
 
@@ -902,44 +1244,54 @@ async function runRewrite(actionId: string, customInstruction?: string): Promise
   showWorking("Reading your text");
 
   try {
-    const source = await inserter.captureTextFromTargetByClipboard(target, context);
-    if (!source || !source.text.trim()) {
-      showFailure("generic", "No text found in that input. Type or select something first.");
+    const { selection, whole } = await inserter.captureSelectionAndWhole(target, context);
+    if (!whole || !whole.trim()) {
+      showFailure("generic", "No text found in that input. Click into it and try again.");
       return;
     }
 
+    // A copy that returns text does not prove a selection exists: VS Code copies
+    // the caret's line when nothing is selected. Treating it as scoped is still
+    // right (rewrite that line), but the write must go through the whole input.
+    const scoped = Boolean(selection?.trim()) && selection!.trim() !== whole.trim();
+    const sourceText = scoped ? selection! : whole;
+    const scope = scoped ? "selection" : "whole";
+
     showWorking(`${action.label}...`);
     rewritten = await getRewriteProvider(config).rewrite(
-      source.text,
-      { actionId, customInstruction },
+      sourceText,
+      { actionId, customInstruction, vocabulary: parseVocabularyTerms(config.customVocabulary) },
       context,
     );
 
     lastInsertion = {
-      transcript: source.text,
+      transcript: sourceText,
       insertedText: rewritten,
       target,
       attempt: 1,
       pasted: false,
+      action: { id: actionId, label: action.label, customInstruction },
     };
 
-    // captureTextFromTargetByClipboard leaves the source text selected, but a
-    // network round-trip has passed since. replaceWholeTextByClipboard
-    // re-verifies the input before overwriting; a plain selection paste asserts
-    // the window instead. Either way a mismatch falls back to copy.
-    if (source.scope === "whole") {
-      await inserter.replaceWholeTextByClipboard(source.text, rewritten, target, context);
-    } else {
-      await inserter.focusTargetWindow(target, context);
-      await inserter.pasteText(rewritten, context, target);
+    // Ctrl+A selects everything, so the paste always replaces and can never
+    // append. Only a scoped rewrite is spliced back into the surrounding text.
+    if (whole.length > MAX_REWRITE_INPUT_CHARS) {
+      inserter.copyText(rewritten, context);
+      void logger.warn("rewrite.whole_too_large", { ...context, wholeChars: whole.length });
+      showFailure("paste_blocked", "That input is too long to edit safely. The rewrite is on your clipboard — press Ctrl+V.");
+      return;
     }
 
+    const nextWhole = scoped ? replaceLastOccurrence(whole, selection!, rewritten) : rewritten;
+    await inserter.replaceWholeTextByClipboard(whole, nextWhole, target, context);
+
     lastInsertion.pasted = true;
+    lastInsertion.insertedText = scoped ? rewritten : nextWhole;
     showDone(`${action.label} applied`, "ok", true);
     void logger.info("rewrite.success", {
       actionId,
-      scope: source.scope,
-      inputChars: source.text.length,
+      scope,
+      inputChars: sourceText.length,
       outputChars: rewritten.length,
     });
   } catch (error) {
@@ -979,6 +1331,25 @@ async function runDictationPipeline(audioPath: string, context: OperationContext
     cleanupRequestId: createId("cleanup"),
     transcription: providers.transcription,
     cleanup: config.cleanupEnabled ? providers.cleanup : undefined,
+    transcriptionLanguage: config.transcriptionLanguage,
+    // Translation rides along with cleanup, so turning polish off also turns
+    // translation off. Splitting them is task 17 in the capability audit.
+    outputLanguage: config.outputLanguage,
+    vocabulary: parseVocabularyTerms(config.customVocabulary),
+    // Collected after transcription, so the capture had the whole recording plus
+    // the transcription round trip to finish in.
+    resolveAppContext: async () => {
+      lastUsedAppContext = await contextService.result();
+      return lastUsedAppContext;
+    },
+    preserveExactWording: config.preserveExactWording,
+    instructionGuardEnabled: config.instructionGuardEnabled,
+    onInstructionGuard: (rawText) => {
+      // Not an error: the model answered the dictation instead of cleaning it,
+      // and we chose the user's own words over its answer.
+      lastGuardTripped = true;
+      void logger.warn("dictation.instruction_guard.tripped", { ...context, rawChars: rawText.length });
+    },
     onStage: (stage) => {
       showWorking(stage === "transcribing" ? "Transcribing" : "Polishing");
     },
@@ -1013,7 +1384,8 @@ function getDictationProviders(nextConfig: AppConfig): {
     providerCache &&
     providerCache.apiKey === nextConfig.groqApiKey &&
     providerCache.transcriptionModel === nextConfig.transcriptionModel &&
-    providerCache.cleanupModel === nextConfig.cleanupModel
+    providerCache.cleanupModel === nextConfig.cleanupModel &&
+    providerCache.cleanupFallbackModel === nextConfig.cleanupFallbackModel
   ) {
     return providerCache;
   }
@@ -1022,13 +1394,27 @@ function getDictationProviders(nextConfig: AppConfig): {
     apiKey: nextConfig.groqApiKey,
     transcriptionModel: nextConfig.transcriptionModel,
     cleanupModel: nextConfig.cleanupModel,
+    cleanupFallbackModel: nextConfig.cleanupFallbackModel,
     transcription: new GroqTranscriptionService(nextConfig.groqApiKey, nextConfig.transcriptionModel),
-    cleanup: new GroqCleanupProvider(nextConfig.groqApiKey, nextConfig.cleanupModel),
-    rewrite: new GroqRewriteProvider(nextConfig.groqApiKey, nextConfig.cleanupModel),
+    // One shared cooldown store across providers: rate limits are enforced per
+    // account, not per object, so a limit one provider hits applies to them all.
+    cleanup: new GroqCleanupProvider(
+      nextConfig.groqApiKey,
+      nextConfig.cleanupModel,
+      nextConfig.cleanupFallbackModel,
+      modelCooldown,
+    ),
+    rewrite: new GroqRewriteProvider(
+      nextConfig.groqApiKey,
+      nextConfig.cleanupModel,
+      nextConfig.cleanupFallbackModel,
+      modelCooldown,
+    ),
   };
   void logger.info("dictation.providers.ready", {
     transcriptionModel: nextConfig.transcriptionModel,
     cleanupModel: nextConfig.cleanupModel,
+    cleanupFallbackModel: nextConfig.cleanupFallbackModel || undefined,
     cleanupEnabled: nextConfig.cleanupEnabled,
   });
   return providerCache;
@@ -1043,7 +1429,7 @@ function getRewriteProvider(nextConfig: AppConfig): GroqRewriteProvider {
  * ------------------------------------------------------------------ */
 
 function createTrayIcon() {
-  return nativeImage.createFromPath(path.join(__dirname, "assets", "tray-icon.ico"));
+  return nativeImage.createFromPath(path.join(assetsDir, "tray-icon.ico"));
 }
 
 async function openLogsFolder(): Promise<void> {
