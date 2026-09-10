@@ -50,6 +50,14 @@ import type { RecorderStopReason } from "./audio/recorder-ipc-payloads.js";
 
 const MAX_RECORDING_DURATION_MS = 5 * 60 * 1_000;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+/**
+ * `recorder.stop()` waits for a start that is still in flight, so the time it
+ * takes tells us whether the recording ever really ran. Measured: a normal stop
+ * is 18-23ms, while a stop that sat waiting for a cold microphone was 819ms.
+ * Above this, an empty recording means the device was not ready, not that the
+ * user said nothing.
+ */
+const MIC_STILL_OPENING_MS = 250;
 const STALE_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
 let tray: InstanceType<typeof Tray> | null = null;
@@ -790,8 +798,14 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
     lastStopReason = stopResult.stopReason;
     recorderStopMs = Date.now() - latencyStartedAt;
     if (!audioPath) {
-      void logger.info("dictation.no_speech", { ...context, stopReason: lastStopReason });
-      showDone(formatEmptyRecordingMessage(lastStopReason), "warn", false);
+      const micWasStillOpening = recorderStopMs >= MIC_STILL_OPENING_MS;
+      void logger.info("dictation.no_speech", {
+        ...context,
+        stopReason: lastStopReason,
+        recorderStopMs,
+        micWasStillOpening,
+      });
+      showDone(formatEmptyRecordingMessage(lastStopReason, micWasStillOpening), "warn", false);
       return;
     }
 
@@ -1603,7 +1617,14 @@ function formatUserError(message: string, id: string): string {
   return `${message} (${id})`;
 }
 
-function formatEmptyRecordingMessage(reason: RecorderStopReason): string {
+function formatEmptyRecordingMessage(reason: RecorderStopReason, micWasStillOpening: boolean): string {
+  // Blaming the user for silence when the microphone simply had not opened yet
+  // sends them looking for a fault that is not theirs. Telling them to press
+  // again is also actionable: the device is warm by the time they read it.
+  if (micWasStillOpening) {
+    return "Microphone was still starting · press again, it is ready now";
+  }
+
   if (reason === "silence") {
     return "Stopped after silence · no speech captured";
   }
