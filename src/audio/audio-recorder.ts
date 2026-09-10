@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { rendererDir } from "../app-paths.js";
 import { BrowserWindow, ipcMain } from "../electron.js";
 import { logger } from "../observability/app-logger.js";
 import { normalizeError } from "../observability/errors.js";
@@ -24,13 +24,19 @@ type TestMicResponse = {
 export type RecordingLimits = {
   maxDurationMs: number;
   maxAudioBytes: number;
+  /** Chosen input device. Empty means whatever the OS considers the default. */
+  microphoneId?: string;
 };
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rendererDir = path.join(__dirname, "..", "renderer");
+export type AudioInputDevice = {
+  deviceId: string;
+  label: string;
+};
+
 const START_TIMEOUT_MS = 5_000;
 const STOP_TIMEOUT_MS = 5_000;
 const TEST_MIC_TIMEOUT_MS = 10_000;
+const DEVICE_LIST_TIMEOUT_MS = 4_000;
 const DEFAULT_LIMITS: RecordingLimits = {
   maxDurationMs: 5 * 60 * 1_000,
   maxAudioBytes: 25 * 1024 * 1024,
@@ -43,6 +49,8 @@ export class AudioRecorder {
   private testMicResolver: ((response: TestMicResponse) => void) | null = null;
   private testMicTimer: NodeJS.Timeout | null = null;
   private activeTestMicRequestId: string | null = null;
+  private devicesResolver: ((devices: AudioInputDevice[]) => void) | null = null;
+  private devicesTimer: NodeJS.Timeout | null = null;
   private activeMaxAudioBytes = DEFAULT_LIMITS.maxAudioBytes;
   private readonly session = new RecorderSessionController();
   private unexpectedErrorHandler: ((error: Error, context: OperationContext) => void | Promise<void>) | null = null;
@@ -113,6 +121,18 @@ export class AudioRecorder {
       }
     });
 
+    ipcMain.handle("recorder:devices", (_event, response: unknown) => {
+      this.assertSender(_event.sender.id);
+      const devices = Array.isArray((response as { devices?: unknown })?.devices)
+        ? ((response as { devices: unknown[] }).devices
+            .filter((device): device is AudioInputDevice =>
+              typeof (device as AudioInputDevice)?.deviceId === "string" &&
+              typeof (device as AudioInputDevice)?.label === "string")
+            .slice(0, 32))
+        : [];
+      this.resolveDevices(devices);
+    });
+
     ipcMain.handle("recorder:error", (_event, response: unknown) => {
       this.assertSender(_event.sender.id);
       let payload;
@@ -181,6 +201,43 @@ export class AudioRecorder {
     });
   }
 
+  /**
+   * Lists audio inputs.
+   *
+   * Enumeration happens in the recorder window because it is the only one
+   * granted media permission, and without permission the browser returns
+   * devices with blank labels — a list of unnamed entries the user cannot choose
+   * between. Never rejects: an empty list degrades Settings to "system default",
+   * which is exactly the behaviour before this feature existed.
+   */
+  listMicrophones(): Promise<AudioInputDevice[]> {
+    if (!this.window) {
+      return Promise.resolve([]);
+    }
+
+    return new Promise((resolve) => {
+      this.clearDevicesTimer();
+      this.devicesTimer = setTimeout(() => this.resolveDevices([]), DEVICE_LIST_TIMEOUT_MS);
+      this.devicesResolver = resolve;
+      this.window?.webContents.send("recorder:list-devices", {});
+    });
+  }
+
+  private resolveDevices(devices: AudioInputDevice[]): void {
+    this.clearDevicesTimer();
+    this.devicesResolver?.(devices);
+    this.devicesResolver = null;
+  }
+
+  private clearDevicesTimer(): void {
+    if (!this.devicesTimer) {
+      return;
+    }
+
+    clearTimeout(this.devicesTimer);
+    this.devicesTimer = null;
+  }
+
   start(context: OperationContext = {}, limits: RecordingLimits = DEFAULT_LIMITS): Promise<void> {
     if (!this.window) {
       throw new Error("Recorder window is not initialized.");
@@ -208,6 +265,7 @@ export class AudioRecorder {
       sessionId: context.sessionId,
       maxDurationMs: limits.maxDurationMs,
       maxAudioBytes: limits.maxAudioBytes,
+      microphoneId: limits.microphoneId || "",
     });
 
     return started.finally(() => this.clearStartTimer());
