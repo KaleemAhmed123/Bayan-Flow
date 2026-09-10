@@ -63,6 +63,13 @@ export type ChatClientLike = {
     completions: {
       create(request: Record<string, unknown>): Promise<{
         choices?: { message?: { content?: string | null }; finish_reason?: string | null }[];
+        /**
+         * Reported so the cost of context can be measured. This is the app's
+         * most expensive call by a wide margin — a screenshot is worth tens of
+         * thousands of tokens against a few hundred for cleanup — and until it
+         * was logged it was the one stage nobody could account for.
+         */
+        usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
       }>;
     };
   };
@@ -332,6 +339,9 @@ export class AppContextService {
           finishReason: choice?.finish_reason ?? "unknown",
           truncated: isTruncated(choice?.finish_reason),
           rawChars: (choice?.message?.content ?? "").length,
+          // Logged here too: a call that returned nothing still spent the
+          // tokens, and that is the most wasteful case there is.
+          usage: completion.usage,
         });
         return { activity: "", visibleNames: [] };
       }
@@ -345,6 +355,7 @@ export class AppContextService {
         summaryChars: answer.activity.length,
         // A count only. The names themselves are read off the user's screen.
         visibleNameCount: answer.visibleNames.length,
+        usage: completion.usage,
       });
       return answer;
     } catch (error) {

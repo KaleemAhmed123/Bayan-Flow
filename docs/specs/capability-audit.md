@@ -1768,6 +1768,63 @@ Suite: **269 tests, all passing** (15 new). `npm run local:smoke` passes.
 **Unverified:** no local model has actually been pointed at yet. The unit tests cover the option
 building and the remap scoping, but "does a real llama.cpp server answer this" needs one run.
 
+### 2026-09-10 — measuring what context actually costs, and the free-tier headroom
+
+`context.infer.success` recorded `summaryChars` and `visibleNameCount` but never `usage`, while
+`groq.cleanup.success` had recorded it all along. **The single most expensive call in the app was
+the one stage nobody could account for.** `usage` is now logged on both the success and the empty
+path — the empty path especially, because a call that returned nothing still spent the tokens and
+that is the most wasteful case there is.
+
+Measured from 55 successful dictations before this change:
+
+```
+openai/gpt-oss-120b   101 calls   58,439 prompt + 11,743 completion   avg 695 tokens/call
+whisper-large-v3       74 calls   12.9 MB audio
+qwen/qwen3.6-27b       51 calls   NOT MEASURED  (36 screenshots, ~65 KB base64 each)
+```
+
+Groq free-tier limits, from console.groq.com/docs/rate-limits, and **enforced at the organisation
+level, not per API key** — which confirms the assumption already written into the shared cooldown
+store:
+
+| Model | RPM | RPD | TPM | TPD |
+| --- | --- | --- | --- | --- |
+| whisper-large-v3 | 20 | 2,000 | — | 7,200 audio-sec/hour, 28,800/day |
+| openai/gpt-oss-120b | 30 | 1,000 | 8,000 | 200,000 |
+| openai/gpt-oss-20b | 30 | 1,000 | 8,000 | 200,000 |
+| qwen/qwen3.6-27b | 30 | 1,000 | 8,000 | 200,000 |
+
+**Audio is never the constraint.** 28,800 audio-seconds a day is eight hours of talking; at a
+fifteen-second dictation that is ~1,900 runs. Transcription RPD would cap at 2,000. Neither binds.
+
+**The binding limit is tokens per day on the chat models**, and which one binds depends entirely on
+the screenshot:
+
+- **Context off:** only cleanup runs. ~500 tokens a call without a context block, so 200,000 TPD is
+  roughly **400 dictations a day**.
+- **Context on, screenshot off:** cleanup at the measured 695 tokens is the binding one, about
+  **280 a day**. The metadata-only context call is small.
+- **Context on, screenshot on:** the vision call dominates and **cannot be estimated honestly until
+  the new logging runs.** The earlier "~17k tokens" figure in conversation was base64 characters
+  divided by four, which is not how image tokens are counted, and should not be trusted.
+
+**A real piece of headroom worth recording:** the fallback model has its own separate 200,000 TPD.
+When the primary exhausts, the cooldown store routes to it, so cleanup capacity is closer to 400,000
+tokens a day across the pair rather than 200,000. That was designed for rate limits rather than
+quota, and it happens to double the daily ceiling too.
+
+**Nothing changed about defaults.** `contextScreenshotEnabled` is already off by default, which is
+the correct setting for a shared build on the free tier. Metadata context stays on: a window title
+costs almost nothing and carries most of the benefit.
+
+**Decision confirmed, not reversed:** one Groq API key remains the only credential a user provides.
+The base-URL fields added earlier stay advanced and optional, for someone running a local model, and
+per-endpoint API keys are deliberately not being added. A user should be able to paste one key and
+start.
+
+Suite: **269 tests, all passing.** `npm run local:smoke` passes.
+
 ## 7. Explanation
 
 ### What changed

@@ -3,7 +3,7 @@
 ## 1. Task
 
 - **Name:** Settings tabs and layout
-- **Status:** planned
+- **Status:** shipped
 - **Started:** 2026-09-10
 - **Last updated:** 2026-09-10
 
@@ -115,14 +115,14 @@ means guessing which one. So:
 
 ## 6. Tasks
 
-- [ ] 1. Rewrite `#page-settings` as five tab panels
-- [ ] 2. Move the health list to the Home page
-- [ ] 3. Shorten help copy, long tail behind `More`
-- [ ] 4. CSS for tabs, search, sticky save bar
-- [ ] 5. JS: sub-tab nav with arrow keys
-- [ ] 6. JS: cross-tab search filter
-- [ ] 7. JS: dirty tracking on the save bar
-- [ ] 8. `npm run build`, launch, verify every control still saves
+- [x] 1. Rewrite `#page-settings` as five tab panels
+- [x] 2. Move the health list to the Home page
+- [x] 3. Shorten help copy, long tail behind `More`
+- [x] 4. CSS for tabs, search, sticky save bar
+- [x] 5. JS: sub-tab nav with arrow keys
+- [x] 6. JS: cross-tab search filter
+- [x] 7. JS: dirty tracking on the save bar
+- [x] 8. `npm run build`, launch, verify every control still saves
 
 ## 7. Updates
 
@@ -134,4 +134,164 @@ means guessing which one. So:
 
 ## 8. Explanation
 
-_Written when the work ships._
+### 1. What changed
+
+The Settings page went from one 22-control scroll to **five tab panels plus a
+search box that filters across all five at once**. The read-only status list
+moved off Settings and onto Home. Save became a sticky bar that says whether
+anything is uncommitted.
+
+Nothing any setting *does* changed. Every input kept its `id`, so the main
+process receives exactly the same payload it did before.
+
+### 2. Why it was needed
+
+Five concrete problems, all listed in section 3 above. The two that mattered
+most: three controls were filed under a heading that did not describe them
+("Keep my exact words" under *Screen context*), and a 280px status rail squeezed
+the form into roughly 376px of a 920px window.
+
+### 3. How it works, step by step
+
+**Browsing.** The tab strip is a `role="tablist"` of five buttons. Clicking one
+calls `showTab(name)`, which sets `hidden` on the four panels that do not match
+`data-tab`, flips `aria-selected`, and moves the single `tabindex="0"` onto the
+chosen tab. That last part is a *roving tabindex*: the whole strip is one Tab
+stop, and Left/Right/Home/End move between tabs inside it, which is how a real
+tab control behaves.
+
+**Searching.** Typing in the box runs `applySettingsSearch()`. For each row — a
+`.field` or a `.toggle` — it builds a haystack from the row's own `textContent`
+plus its `data-keywords`, and sets `hidden` on rows that do not contain the
+query. A card with no visible rows hides; a panel with no visible cards hides.
+The tab strip hides too, and each surviving panel shows its `.panel-tag`
+heading, so results read as "DICTATION → Language → Spoken language" rather than
+as a flat list you cannot place.
+
+Two details make the search feel like it knows more than it does:
+
+- A `<select>` owns its `<option>` elements, so `textContent` already contains
+  every language name. Typing `urdu` finds both language rows with no extra work.
+- `data-keywords` carries only the words that are *not* on screen — `blacklist`
+  for the blocklist, `shortcut` for the hotkeys, `ollama` for the base URLs.
+
+Search never rewrites the DOM. It only toggles `hidden`, so every input keeps
+its element, its id, its listeners, and whatever the user has typed into it.
+Clearing the box calls `showTab(activeTab)` and puts the previous tab back.
+
+**Saving.** `markDirty()` runs on `input` and `change` for every entry in
+`fields`. A fresh page load assigns ~28 values with `.value =` and `.checked =`,
+which fire no events, so the bar stays clean until the user actually edits
+something. `markClean()` runs only after a save resolves. Navigating away from
+Settings while dirty raises the existing status toast, because the save bar
+leaves with the page.
+
+### 4. Files and functions changed
+
+**`src/renderer/settings.html`**
+
+- `#page-settings` rewritten: search box, five `.tab` buttons, five `.panel`
+  sections, sticky `footer.savebar`.
+- A `<section class="card">` holding `<ul id="health">` added to `#page-home`.
+- `#setupNotice` gained an **Add key** button that jumps to Settings → General
+  and focuses the key field.
+- Toggles changed from `<label class="toggle">` wrapping everything to
+  `<div class="toggle">` with the title carrying the `for`. Necessary: a
+  `<details>` inside a `<label>` would flip the checkbox on every click of its
+  summary.
+
+**`src/renderer/settings.css`**
+
+- Deleted `.grid`, `.column`, `.rail` and the `@media (max-width: 880px)` rule —
+  dead once the rail left.
+- Deleted the `border-top` from base `.toggle` and the
+  `.card .toggle:first-of-type` undo; separators are now
+  `.toggle-list > .toggle + .toggle`, which needs no undo rule.
+- Moved the trailing scroll gutter from `.content` to `.page`. See decision 3.
+- Added: `.searchbox`, `.tabs`/`.tab`, `.panels`/`.panel`/`.panel-tag`,
+  `.field-row`, `.field-pair`, `.toggle-list`, `.more`, `.savebar`,
+  `.save-state`, `.sr-only`, and first-time rules for `select`, `textarea`,
+  `input[type="number"]` and `code`.
+
+**`src/renderer/settings.js`**
+
+- Added `showTab`, `applySettingsSearch`, `markDirty`, `markClean`, tab
+  click/keydown handlers, Ctrl+S to save, Ctrl+F to focus search, and the
+  setup-notice jump.
+- `showPage()` now warns when leaving Settings dirty.
+- The save handler calls `markClean()` on success.
+- `renderSetupChecklist` copy fixed: the mic Test button is no longer "at the
+  top of the Settings page".
+
+### 5. Important decisions
+
+1. **Search, not just tabs.** Five tabs still means guessing which one. The
+   search box is what actually answers "so I do not have to look for things".
+2. **Toggle is a `<div>`, not a `<label>`.** The `More` expander lives inside
+   the toggle; inside a `<label>` every click on its summary would also flip the
+   checkbox. Verified in the browser.
+3. **The scroll gutter moved from `.content` to `.page`.** A scroll container's
+   bottom padding sits outside its scrollport, so a `position: sticky;
+   bottom: 0` child comes to rest that many pixels *above* the window edge. The
+   save bar was floating 72px up with cards visible below it. Measured at
+   `barBottom: 688` against a `760` viewport, fixed, re-measured at `760`.
+   `#page-settings` gets `padding-bottom: 0` because it ends in the bar itself.
+4. **Explicit Save kept.** Saving re-registers global hotkeys in the main
+   process, so a half-typed hotkey must never be applied. Rejected auto-save.
+5. **Status went to Home, not a sixth tab.** Someone whose app is broken does
+   not open Settings for a diagnosis; they are already on Home, next to the
+   setup checklist.
+6. **Rejected:** anchor links on one long page, and an accordion. Both keep the
+   unbounded scroll.
+
+### 6. Tests and verification
+
+- `npm run build` — clean.
+- `npm test` — **269 passed, 0 failed.**
+- `node --check src/renderer/settings.js` — clean.
+- Static check: no duplicate element ids; all 23 config field ids present
+  exactly once; each resolves to exactly one tab panel.
+- **Driven in a real browser** at the shipped 920x760 window size, against a
+  stubbed `settingsBridge`. Confirmed:
+  - Search `screenshot` returns hits from Privacy *and* Advanced; `blacklist`
+    (a keyword that appears nowhere on screen) finds the blocklist; `urdu` finds
+    both language selects; `zzzz` shows the empty state; clearing restores the
+    previous tab and all rows.
+  - Clicking a `More` summary does not flip its checkbox; clicking the title does.
+  - Dirty marker: clean on load → "Unsaved changes" on edit → clean after save →
+    warning toast when leaving Settings dirty.
+  - The screenshot toggle still disables itself when its parent is off.
+  - Arrow-Right and End move tabs; `aria-selected` and roving `tabindex` follow.
+  - Save bar bottom edge measured at `760` against a `760` viewport.
+  - The status list renders 9 rows on Home.
+
+### 7. Edge cases and limitations
+
+- **Search is a plain substring match.** No fuzzy matching, no stemming — a typo
+  finds nothing. `data-keywords` covers the synonyms that matter today; a term
+  nobody thought of will miss.
+- **Search does not highlight the matched text**, it only filters rows.
+- **The dirty marker is set-only per session.** Editing a field and typing the
+  original value back still reads as unsaved. Tracking real equality would mean
+  snapshotting 28 values on load for very little gain.
+- **Leaving Settings dirty warns but does not block.** Deliberate: a modal that
+  traps you on a settings page is worse than a toast.
+- **Ctrl+F only works while Settings is open.** Elsewhere it is left alone rather
+  than yanking the user off the page they are on.
+- **Tabs are not deep-linkable.** Only the setup notice jumps to a specific tab.
+  If the main process ever needs to open Settings at a named tab, `showTab` is
+  the hook.
+
+## 9. Updates (continued)
+
+- **2026-09-10** — Shipped. While this was in flight, a parallel session
+  committed `52ad9c3` ("configurable base URLs and per-stage timeouts"), which
+  swept this task's html/css/js in alongside its own work and added five new
+  fields into the Advanced panel. That merge left three regressions, all fixed
+  here:
+  1. The new *Where the models run* card used `class="grid"`, a rule this task
+     had deleted as dead. Its five fields rendered with no layout at all.
+     Changed to `.field-pair`, which is what the card wanted.
+  2. `input[type="number"]` had never been in the input selector, so the three
+     new timeout fields rendered as default light browser inputs in a dark UI.
+  3. `<code>` in the new base-URL help copy had no rule behind it.

@@ -594,7 +594,7 @@ function renderSetupChecklist(config, localHealth) {
     {
       done: !localHealth.lastMicError,
       title: "Test the microphone",
-      copy: "Use the button at the top of the Settings page before your first real recording.",
+      copy: "Settings, General, next to the microphone picker. Do it before your first real recording.",
     },
     {
       done: Boolean(localHealth.hotkeyAvailable),
