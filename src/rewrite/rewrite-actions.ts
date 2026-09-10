@@ -9,13 +9,12 @@ export type RewriteActionId =
   | "custom";
 
 /**
- * `layer` drives the dock menu: 1 is always visible, 2 appears behind "More".
- * Layer 1 is deliberately three wide so the common case is one click.
+ * Every action renders in the dock menu at once. There is no layering: the
+ * "More" split cost a click on actions people use as often as the first three.
  */
 export type RewriteAction = {
   id: RewriteActionId;
   label: string;
-  layer: 1 | 2;
   instruction: string;
 };
 
@@ -25,56 +24,48 @@ export const REWRITE_ACTIONS: RewriteAction[] = [
   {
     id: "polish",
     label: "Polish",
-    layer: 1,
     instruction: "Polish the text so it reads clearly and smoothly while preserving the original meaning.",
   },
   {
     id: "professional",
     label: "Professional",
-    layer: 1,
     instruction: "Rewrite the text in a professional, clear, and respectful tone.",
   },
   {
     id: "shorten",
     label: "Shorten",
-    layer: 1,
     instruction: "Make the text shorter and more direct while preserving the important meaning.",
   },
   {
     id: "fix_grammar",
     label: "Fix grammar",
-    layer: 2,
     instruction: "Fix grammar, spelling, punctuation, and spacing while preserving the original wording as much as possible.",
   },
   {
     id: "friendly",
     label: "Friendly",
-    layer: 2,
     instruction: "Rewrite the text in a friendly, casual, and natural tone without becoming childish.",
   },
   {
     id: "expand",
     label: "Expand",
-    layer: 2,
     instruction: "Slightly expand the text for clarity, adding only obvious connective wording and no new facts.",
   },
   {
     id: "simplify",
     label: "Simplify",
-    layer: 2,
     instruction: "Simplify the text so it is easier to understand while preserving the original meaning.",
   },
   {
     id: "custom",
     label: "Custom",
-    layer: 2,
     instruction: "Follow the user's custom rewrite instruction while preserving the original meaning.",
   },
 ];
 
 /** Shape the dock renderer needs. Kept here so the menu and the prompts cannot drift apart. */
-export function getDockMenuActions(): { id: RewriteActionId; label: string; layer: 1 | 2 }[] {
-  return REWRITE_ACTIONS.map((action) => ({ id: action.id, label: action.label, layer: action.layer }));
+export function getDockMenuActions(): { id: RewriteActionId; label: string }[] {
+  return REWRITE_ACTIONS.map((action) => ({ id: action.id, label: action.label }));
 }
 
 export function isRewriteActionId(value: unknown): value is RewriteActionId {
@@ -104,7 +95,34 @@ export function getRewriteAction(actionId: RewriteActionId): RewriteAction {
   return action;
 }
 
-export function buildRewritePrompt(input: string, actionId: RewriteActionId, customInstruction = ""): string {
+/**
+ * Same contract as the cleanup prompt: the list fixes the spelling of words that
+ * are already there, and may never introduce a name the text did not contain.
+ * Without the second half a rewrite starts inserting the user's product name
+ * into sentences that were never about it.
+ */
+function vocabularySection(vocabulary: string[] | undefined): string {
+  if (!vocabulary?.length) {
+    return "";
+  }
+
+  return `
+Known spellings (correct these if the text misspells them, never add them):
+${vocabulary.join(", ")}
+`;
+}
+
+/**
+ * `attempt` above 1 means the user pressed Redo. The instruction stays the same
+ * so a Shorten stays a Shorten; only the wording is asked to differ.
+ */
+export function buildRewritePrompt(
+  input: string,
+  actionId: RewriteActionId,
+  customInstruction = "",
+  attempt = 1,
+  vocabulary?: string[],
+): string {
   const trimmedInput = input.trim();
   if (!trimmedInput) {
     throw new Error("Type or select text first.");
@@ -118,11 +136,11 @@ export function buildRewritePrompt(input: string, actionId: RewriteActionId, cus
   const instruction = actionId === "custom" ? normalizeCustomInstruction(customInstruction) : action.instruction;
 
   if (actionId === "custom") {
-    return buildCustomInstructionPrompt(trimmedInput, instruction);
+    return buildCustomInstructionPrompt(trimmedInput, instruction, attempt, vocabulary);
   }
 
   return `
-Task: ${instruction}
+Task: ${instruction}${variationNote(attempt)}${vocabularySection(vocabulary)}
 
 Rules:
 - Preserve the user's meaning and factual claims.
@@ -138,9 +156,24 @@ ${trimmedInput}
 `.trim();
 }
 
-function buildCustomInstructionPrompt(input: string, instruction: string): string {
+function variationNote(attempt: number): string {
+  if (attempt <= 1) {
+    return "";
+  }
+
   return `
-Task: Follow the user's instruction for the provided text.
+
+This is alternative attempt ${attempt}. Follow the same instruction, but choose noticeably different wording and sentence structure from an obvious first answer.`;
+}
+
+function buildCustomInstructionPrompt(
+  input: string,
+  instruction: string,
+  attempt = 1,
+  vocabulary?: string[],
+): string {
+  return `
+Task: Follow the user's instruction for the provided text.${variationNote(attempt)}${vocabularySection(vocabulary)}
 
 User instruction:
 ${instruction}
