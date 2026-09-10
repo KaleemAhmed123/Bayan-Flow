@@ -241,6 +241,10 @@ app.whenReady()
     });
 
     await recorder.init();
+    // Opening the device costs ~1.6s the first time and nothing afterwards, so
+    // pay it here rather than inside the user's first dictation. Fire and
+    // forget: startup never waits on it and never fails because of it.
+    recorder.prewarm(config.microphoneId);
     await dock.init();
 
     const settingsWindow = new SettingsWindow(

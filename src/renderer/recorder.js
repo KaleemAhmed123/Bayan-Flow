@@ -247,3 +247,25 @@ window.recorderBridge.onListDevices(async () => {
     await window.recorderBridge.devicesListed({ devices: [] });
   }
 });
+
+/**
+ * Opening a microphone for the first time after launch was measured at 1,646ms
+ * on a real machine, against 18-23ms once warm. A press shorter than that
+ * captured no audio at all, so the first dictation of every run came back
+ * empty. Opening a stream here and dropping it immediately leaves the device
+ * initialised, and the first real recording starts as fast as every later one.
+ *
+ * The tracks are stopped straight away, so no in-use indicator stays lit.
+ * Failure is swallowed on purpose: this is an optimisation, and the real open
+ * is what should report a real microphone problem.
+ */
+window.recorderBridge.onPrewarm(async (_event, payload) => {
+  try {
+    const stream = await openMicrophone(payload?.microphoneId || "");
+    for (const track of stream.getTracks()) {
+      track.stop();
+    }
+  } catch {
+    // Deliberately silent. The next recording surfaces anything that matters.
+  }
+});

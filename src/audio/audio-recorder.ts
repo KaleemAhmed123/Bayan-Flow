@@ -172,6 +172,20 @@ export class AudioRecorder {
     void logger.info("recorder.init.success");
   }
 
+  /**
+   * Opens and immediately drops the audio device, so the first real recording
+   * does not pay the cold-start cost. Measured at 1,646ms on first use against
+   * 18-23ms once warm, which is long enough that a short press captured nothing
+   * at all.
+   *
+   * Fire and forget by design: there is no acknowledgement, nothing waits on
+   * it, and a failure stays silent because the next real recording reports any
+   * genuine microphone problem itself. Warming must never be a way to fail.
+   */
+  prewarm(microphoneId = ""): void {
+    this.window?.webContents.send("recorder:prewarm", { microphoneId });
+  }
+
   testMicrophone(): Promise<void> {
     if (!this.window) {
       throw new Error("Recorder window is not initialized.");
