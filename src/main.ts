@@ -13,7 +13,7 @@ import {
 } from "./config-store.js";
 import { ModelCooldownManager } from "./llm/model-cooldown.js";
 import { AppContextService } from "./context/context-service.js";
-import { writeCase, type DebugCase } from "./debug/case-export.js";
+import { buildCasePayload, writeCase, type DebugCase } from "./debug/case-export.js";
 import { appNameFromTitle, parseBlocklist } from "./context/context-rules.js";
 import { runDictationPipelineWithProviders } from "./dictation/dictation-pipeline.js";
 import { app, clipboard, crashReporter, dialog, Menu, nativeImage, shell, Tray } from "./electron.js";
@@ -301,6 +301,8 @@ app.whenReady()
         }
       },
       () => recorder.listMicrophones(),
+      // Same builder the export uses, so the panel and case.json cannot drift.
+      () => (lastDebugCase ? buildCasePayload(lastDebugCase) : null),
     );
     settingsWindowRef = settingsWindow;
 
@@ -933,7 +935,11 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
     isProcessing = false;
     if (audioPath) {
       if (config.debugCaptureEnabled) {
-        await retainDebugCase(audioPath, pipelineResult, context, latencyStartedAt);
+        await retainDebugCase(audioPath, pipelineResult, context, latencyStartedAt, {
+          recorderStopMs,
+          pipelineMs,
+          insertionMs,
+        });
       } else {
         await deleteTempAudio(audioPath, context);
       }
@@ -956,6 +962,7 @@ async function retainDebugCase(
   result: DictationResult | null,
   context: OperationContext,
   startedAt: number,
+  timings: { recorderStopMs: number; pipelineMs: number; insertionMs: number },
 ): Promise<void> {
   const previousAudio = lastDebugCase?.audioPath;
   if (previousAudio && previousAudio !== audioPath) {
@@ -977,6 +984,8 @@ async function retainDebugCase(
     cleanupEnabled: config.cleanupEnabled,
     preserveExactWording: config.preserveExactWording,
     durationMs: Date.now() - startedAt,
+    timings,
+    cleanupWasFallback: Boolean(result?.cleanupFallback),
     cleanupError: result?.cleanupFallback ? "cleanup failed; raw transcript inserted" : undefined,
     instructionGuardTripped: lastGuardTripped,
   };

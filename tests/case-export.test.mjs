@@ -114,3 +114,28 @@ test("a missing audio file yields a thinner case, not a failed export", async ()
   assert.ok(files.includes("case.json"));
   assert.equal(files.includes("gone.webm"), false);
 });
+
+/* ---------------------------------------------------------------- *
+ * Stage timings, added for the debug panel
+ * ---------------------------------------------------------------- */
+
+test("timings reach the payload so the panel can say where the time went", () => {
+  const payload = buildCasePayload({
+    ...baseCase,
+    timings: { recorderStopMs: 456, pipelineMs: 1200, insertionMs: 900 },
+    cleanupWasFallback: true,
+  });
+
+  assert.deepEqual(payload.outcome.timings, { recorderStopMs: 456, pipelineMs: 1200, insertionMs: 900 });
+  assert.equal(payload.outcome.cleanupWasFallback, true);
+});
+
+test("a case recorded before timings existed still builds", () => {
+  // The retained case outlives a version upgrade, and a debug panel that threw
+  // on an older shape would break the very tool used to diagnose the upgrade.
+  const payload = buildCasePayload(baseCase);
+
+  assert.equal(payload.outcome.timings, null);
+  assert.equal(payload.outcome.cleanupWasFallback, false);
+  assert.equal(payload.outcome.durationMs, 2100);
+});

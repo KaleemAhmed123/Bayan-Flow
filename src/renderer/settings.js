@@ -56,6 +56,7 @@ const pages = {
   home: document.getElementById("page-home"),
   history: document.getElementById("page-history"),
   stats: document.getElementById("page-stats"),
+  debug: document.getElementById("page-debug"),
   settings: document.getElementById("page-settings"),
 };
 
@@ -87,6 +88,8 @@ function showPage(name) {
     void loadHistory();
   } else if (name === "stats") {
     void loadStats();
+  } else if (name === "debug") {
+    void loadDebugCase();
   }
 }
 
@@ -637,22 +640,28 @@ function renderHealth(config, localHealth) {
         : "Reserved. Other apps no longer see this shortcut.";
   }
 
-  health.replaceChildren();
-  for (const [label, value, state] of rows) {
-    const item = document.createElement("li");
-    item.dataset.state = state;
+  renderHealthRows(health, rows);
+}
 
-    const name = document.createElement("span");
-    name.className = "health-label";
-    name.textContent = label;
+/** Label/value/state rows. Shared by the health panel and the debug page. */
+function renderHealthRows(target, rows) {
+  target.replaceChildren(
+    ...rows.map(([label, value, state]) => {
+      const item = document.createElement("li");
+      item.dataset.state = state;
 
-    const valueNode = document.createElement("strong");
-    valueNode.className = "health-value";
-    valueNode.textContent = value;
+      const name = document.createElement("span");
+      name.className = "health-label";
+      name.textContent = label;
 
-    item.append(name, valueNode);
-    health.append(item);
-  }
+      const valueNode = document.createElement("strong");
+      valueNode.className = "health-value";
+      valueNode.textContent = value;
+
+      item.append(name, valueNode);
+      return item;
+    }),
+  );
 }
 
 function setApiKeyMasked(hasKey) {
@@ -834,3 +843,111 @@ async function populateMicrophones(savedId) {
   fields.microphoneId.value = savedId;
   help.textContent = "Your saved microphone is not connected. Recording is using the system default until it returns.";
 }
+
+/* ---------------- debug: the last dictation, stage by stage ---------------- */
+
+/**
+ * Renders exactly what `buildCasePayload` produces, which is the same object the
+ * export writes to case.json. Sharing the builder means the screen and the file
+ * can never disagree about what happened, which matters because the usual
+ * workflow is "look here, then send the file".
+ */
+async function loadDebugCase() {
+  const empty = document.getElementById("debugEmpty");
+  const body = document.getElementById("debugBody");
+  const why = document.getElementById("debugEmptyWhy");
+
+  let payload = null;
+  try {
+    payload = await window.settingsBridge.lastDebugCase();
+  } catch {
+    payload = null;
+  }
+
+  if (!payload) {
+    body.hidden = true;
+    empty.hidden = false;
+    why.textContent = fields.debugCaptureEnabled.checked
+      ? "Debug capture is on, but nothing has been dictated since. Dictate once, then come back."
+      : "Turn on \u201cKeep the last dictation for debugging\u201d in Settings, then dictate once.";
+    return;
+  }
+
+  empty.hidden = true;
+  body.hidden = false;
+  renderDebugTiles(payload);
+  renderDebugTranscript(payload);
+  renderDebugContext(payload);
+  document.getElementById("debugPrompt").textContent = payload.cleanupPrompt || "Cleanup was off for this run.";
+}
+
+function renderDebugTiles(payload) {
+  const timings = payload.outcome.timings;
+  const total = payload.outcome.durationMs;
+
+  // A large recorder figure means the microphone was still opening, which is a
+  // completely different problem from a slow model, so they are never merged.
+  renderTiles(document.getElementById("debugTiles"), [
+    ["Total", formatMs(total), formatWhen(Date.parse(payload.recordedAt))],
+    ["Recorder", timings ? formatMs(timings.recorderStopMs) : "—", timings && timings.recorderStopMs >= 250 ? "microphone was still opening" : "handing over the audio"],
+    ["Transcribe + polish", timings ? formatMs(timings.pipelineMs) : "—", payload.settings.transcriptionModel],
+    ["Insert", timings ? formatMs(timings.insertionMs) : "—", "focus and paste"],
+    [
+      "Cleanup model",
+      payload.settings.cleanupEnabled ? (payload.outcome.cleanupWasFallback ? "Fallback" : "Primary") : "Off",
+      payload.outcome.cleanupWasFallback ? payload.settings.cleanupFallbackModel || "" : payload.settings.cleanupModel,
+    ],
+    [
+      "Guard",
+      payload.outcome.instructionGuardTripped ? "Tripped" : "Clear",
+      payload.outcome.instructionGuardTripped ? "polish looked like an answer; raw text used" : "",
+    ],
+  ]);
+}
+
+function renderDebugTranscript(payload) {
+  document.getElementById("debugRaw").textContent = payload.transcript.raw || "(nothing transcribed)";
+  document.getElementById("debugFinal").textContent = payload.transcript.final || "(nothing inserted)";
+
+  const badge = document.getElementById("debugChanged");
+  badge.textContent = payload.transcript.changed ? "changed by polish" : "unchanged";
+  badge.className = `debug-badge ${payload.transcript.changed ? "is-changed" : ""}`;
+}
+
+function renderDebugContext(payload) {
+  const list = document.getElementById("debugContext");
+  const context = payload.context;
+
+  if (!context) {
+    renderHealthRows(list, [["Context", "Not captured for this run", "neutral"]]);
+    return;
+  }
+
+  if (context.blocked) {
+    // The blocklist deliberately yields nothing at all, not even a title.
+    renderHealthRows(list, [["Context", "Blocked for this window", "neutral"]]);
+    return;
+  }
+
+  const names = context.visibleNames || [];
+  renderHealthRows(list, [
+    ["App", context.appName || "Unknown", "neutral"],
+    ["Window", context.windowTitle || "Unknown", "neutral"],
+    ["Screenshot", context.usedScreenshot ? "Used" : "Metadata only", context.usedScreenshot ? "good" : "neutral"],
+    ["Names seen on screen", names.length ? names.join(", ") : "None", names.length ? "good" : "neutral"],
+    ["Known spellings", payload.settings.vocabulary.length ? payload.settings.vocabulary.join(", ") : "None", "neutral"],
+    ["Activity", context.activity || "Not described", "neutral"],
+  ]);
+}
+
+function formatMs(value) {
+  if (typeof value !== "number") {
+    return "—";
+  }
+
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${value}ms`;
+}
+
+document.getElementById("debugRefresh").addEventListener("click", () => {
+  void loadDebugCase();
+});

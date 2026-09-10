@@ -53,6 +53,18 @@
             </svg>
             <span>Stats</span>
           </button>
+          <button class="nav-item" type="button" data-page="debug" role="tab">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M4 5.5a4 4 0 0 1 8 0v3a4 4 0 0 1-8 0zM1.8 7h2.4M11.8 7h2.4M2.6 3.6l1.8 1.4M13.4 3.6l-1.8 1.4M2.6 11.4l1.8-1.4M13.4 11.4l-1.8-1.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span>Debug</span>
+          </button>
           <button class="nav-item" type="button" data-page="settings" role="tab">
             <svg viewBox="0 0 16 16" aria-hidden="true">
               <circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.4" />
@@ -161,6 +173,63 @@
             </div>
             <ul class="apps" id="topApps"></ul>
           </section>
+        </section>
+
+        <!-- ---------------- Debug ---------------- -->
+        <section class="page" id="page-debug" hidden>
+          <header class="page-head">
+            <div>
+              <h1>Last dictation</h1>
+              <p class="page-sub">
+                Every stage of the most recent run, exactly as the export file records it.
+              </p>
+            </div>
+            <button id="debugRefresh" class="btn" type="button">Refresh</button>
+          </header>
+
+          <div id="debugEmpty" class="card">
+            <div class="card-head">
+              <h2>Nothing captured</h2>
+              <p id="debugEmptyWhy"></p>
+            </div>
+          </div>
+
+          <div id="debugBody" hidden>
+            <div class="tiles" id="debugTiles"></div>
+
+            <section class="card">
+              <div class="card-head">
+                <h2>Speech to text</h2>
+                <p>What the speech model heard, and what polish did to it.</p>
+              </div>
+              <div class="debug-compare">
+                <div>
+                  <h3 class="debug-label">Raw transcript</h3>
+                  <pre class="debug-text" id="debugRaw"></pre>
+                </div>
+                <div>
+                  <h3 class="debug-label">Final text <span id="debugChanged" class="debug-badge"></span></h3>
+                  <pre class="debug-text" id="debugFinal"></pre>
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-head">
+                <h2>Context</h2>
+                <p>What BayanFlow could see on screen, and the names it passed through verbatim.</p>
+              </div>
+              <ul class="health" id="debugContext"></ul>
+            </section>
+
+            <section class="card">
+              <div class="card-head">
+                <h2>Prompt sent to the cleanup model</h2>
+                <p>Rebuilt from the same inputs, so this is character for character what was sent.</p>
+              </div>
+              <pre class="debug-text debug-prompt" id="debugPrompt"></pre>
+            </section>
+          </div>
         </section>
 
         <!-- ---------------- Settings ---------------- -->

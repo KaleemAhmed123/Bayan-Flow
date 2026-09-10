@@ -976,7 +976,7 @@ not damage them.
 - [ ] 27. Paste Again global shortcut (C3)
 - [ ] 28. Press-enter voice command (C4)
 - [ ] 29. Shortcut start delay (C6)
-- [ ] 30. Pipeline debug panel (D2)
+- [x] 30. Pipeline debug panel (D2)
 - [ ] 31. Retry-from-history with optional audio retention (D3)
 - [ ] 32. CHANGELOG, CI workflow, auto-updater (G1–G3)
 - [ ] 33. Streaming transcription (H1)
@@ -1672,6 +1672,53 @@ call, rejection reporting, rebinding, and an unregister that throws during shutd
 
 **Unverified until run:** whether the OS actually stops the key reaching the focused app, and whether
 uiohook still sees it. Both are one manual test.
+
+### 2026-09-10 — Task 30: the debug panel was mostly already built
+
+D2 asked for a developer view of the last run: context, raw transcript, prompt sent, cleaned
+result, which model answered, and where the time went. Almost all of it already existed and was
+only reachable by exporting a file and opening it in an editor.
+
+`buildCasePayload` already assembles every one of those fields, including the cleanup prompt —
+rebuilt deterministically from the stored inputs rather than captured at request time, so there is
+no prompt-recording plumbing to keep in sync. The Settings window already had a sidebar with pages.
+**So this was a rendering job, not a build.**
+
+Two gaps in the data, both filled from values that already existed a few lines away:
+
+- **Stage timings.** `dictation.latency` was already computing `recorderStopMs`, `pipelineMs` and
+  `insertionMs` and throwing them at the log. They are now kept on the case as well. The recorder
+  figure is deliberately its own tile, because a large one means the microphone was still opening —
+  a completely different problem from a slow model, and one this file has already spent a day on.
+- **Which model answered.** `cleanupWasFallback`, from the pipeline result that was already there.
+
+Decisions:
+
+- **The panel and `case.json` share one builder.** They cannot disagree about what happened, which
+  matters because the workflow is "look at the screen, then send me the file". A second shape for
+  the screen would have been a second thing to keep true.
+- **The existing Settings window, not a new one.** A second `BrowserWindow` is more lifecycle, more
+  focus handling and more to destroy on quit, for a page.
+- **No new setting.** `debugCaptureEnabled` already decides whether a case is retained. With it off
+  the page says so and names the toggle, rather than appearing broken.
+- **Raw and final side by side.** "Polish made it worse" is the argument D2 exists to settle, and
+  that is only answerable by seeing both at once. They stack on a narrow window rather than
+  shrinking into two unreadable columns.
+- **`renderHealthRows` extracted** from the health panel rather than copied, so the two lists cannot
+  drift apart.
+
+**Deliberately not done:** live streaming of stages as they run, which needs event plumbing through
+the whole pipeline for little more than "dictate, then look"; and a history of several cases, which
+is a privacy decision about what the app retains, not a UI one.
+
+Suite: **254 tests, all passing** (2 new). `npm run local:smoke` passes.
+
+One of the new tests covers a case retained before `timings` existed. A panel that threw on an older
+shape would break the very tool used to diagnose an upgrade, which is the same robustness hole the
+context snapshot hit in the entry above.
+
+**Still unverified from Task 23:** whether the OS actually suppresses the hotkey and whether uiohook
+still sees it. Neither has been run yet.
 
 ## 7. Explanation
 

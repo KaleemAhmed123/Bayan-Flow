@@ -899,3 +899,71 @@ kbd {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ---------- debug page ---------- */
+
+/*
+ * Raw and final sit side by side because "polish made it worse" is the argument
+ * this page exists to settle, and that is only answerable by seeing both at once.
+ * They stack below 720px rather than shrinking into two unreadable columns.
+ */
+.debug-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--bf-space-4);
+}
+
+@media (max-width: 720px) {
+  .debug-compare {
+    grid-template-columns: 1fr;
+  }
+}
+
+.debug-label {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-2);
+  margin: 0 0 var(--bf-space-2);
+  color: var(--bf-text-muted);
+  font-size: var(--bf-size-xs);
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.debug-text {
+  margin: 0;
+  border: 1px solid var(--bf-line);
+  border-radius: var(--bf-radius-sm);
+  background: var(--bf-bg-sunken, var(--bf-bg-raised));
+  padding: var(--bf-space-3);
+  /* Transcripts are prose, so they wrap; the prompt keeps its own line breaks. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--bf-size-sm);
+  line-height: 1.55;
+}
+
+/* The prompt runs to thousands of characters, so it scrolls instead of pushing
+   everything else off the page. */
+.debug-prompt {
+  max-height: 340px;
+  overflow-y: auto;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: var(--bf-size-xs);
+}
+
+.debug-badge {
+  border-radius: var(--bf-radius-pill);
+  background: var(--bf-bg-raised);
+  padding: 2px 8px;
+  color: var(--bf-text-muted);
+  font-size: var(--bf-size-xs);
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.debug-badge.is-changed {
+  color: var(--bf-busy);
+}

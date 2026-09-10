@@ -37,6 +37,21 @@ export type DebugCase = {
   preserveExactWording: boolean;
   /** Milliseconds from recording stop to inserted text. */
   durationMs: number;
+  /**
+   * Where that time actually went. Already computed for `dictation.latency`;
+   * kept here so the debug panel can answer "why was that slow" without the
+   * user going to the log file.
+   */
+  timings?: {
+    /** Waiting for the recorder to hand over the audio. Large means a cold mic. */
+    recorderStopMs: number;
+    /** Transcription plus cleanup. */
+    pipelineMs: number;
+    /** Focusing the target window and pasting. */
+    insertionMs: number;
+  };
+  /** True when the fallback model answered because the primary was unavailable. */
+  cleanupWasFallback?: boolean;
   /** Set when cleanup failed and the raw transcript was inserted instead. */
   cleanupError?: string;
   /** True when the instruction guard rejected the model's output. */
@@ -87,6 +102,10 @@ export function buildCasePayload(debugCase: DebugCase) {
       : null,
     outcome: {
       durationMs: debugCase.durationMs,
+      // Absent on a case retained before timings were recorded, so every reader
+      // must tolerate null rather than assume the field is there.
+      timings: debugCase.timings ?? null,
+      cleanupWasFallback: Boolean(debugCase.cleanupWasFallback),
       cleanupError: debugCase.cleanupError ?? null,
       instructionGuardTripped: Boolean(debugCase.instructionGuardTripped),
     },

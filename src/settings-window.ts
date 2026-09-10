@@ -31,6 +31,8 @@ export class SettingsWindow {
     private readonly getHealth: () => SettingsHealth,
     private readonly onTestMicrophone: () => Promise<void>,
     private readonly listMicrophones: () => Promise<{ deviceId: string; label: string }[]>,
+    /** The last dictation as a case payload, or null when nothing is retained. */
+    private readonly getLastCase: () => unknown,
   ) {}
 
   async show(): Promise<void> {
@@ -81,6 +83,13 @@ export class SettingsWindow {
         groqApiKey: "",
         health: this.getHealth(),
       };
+    });
+    // Read only, and returns null unless debug capture is on. The panel shows
+    // exactly what the export writes, so the screen and the file can never
+    // disagree when the user sends one over.
+    ipcMain.handle("debug:last-case", (event) => {
+      this.assertSender(event.sender.id);
+      return this.getLastCase();
     });
     ipcMain.handle("settings:test-mic", async (event) => {
       this.assertSender(event.sender.id);
