@@ -765,6 +765,7 @@ async function startRecording(): Promise<void> {
       model: config.contextModel,
       blocklist: parseBlocklist(config.contextBlocklist),
       apiKey: config.groqApiKey,
+      endpoint: { baseUrl: config.chatBaseUrl, timeoutMs: config.contextTimeoutMs },
     },
     context,
   );
@@ -1479,7 +1480,10 @@ function getDictationProviders(nextConfig: AppConfig): {
     transcriptionModel: nextConfig.transcriptionModel,
     cleanupModel: nextConfig.cleanupModel,
     cleanupFallbackModel: nextConfig.cleanupFallbackModel,
-    transcription: new GroqTranscriptionService(nextConfig.groqApiKey, nextConfig.transcriptionModel),
+    transcription: new GroqTranscriptionService(nextConfig.groqApiKey, nextConfig.transcriptionModel, {
+      baseUrl: nextConfig.transcriptionBaseUrl,
+      timeoutMs: nextConfig.transcriptionTimeoutMs,
+    }),
     // One shared cooldown store across providers: rate limits are enforced per
     // account, not per object, so a limit one provider hits applies to them all.
     cleanup: new GroqCleanupProvider(
@@ -1487,12 +1491,14 @@ function getDictationProviders(nextConfig: AppConfig): {
       nextConfig.cleanupModel,
       nextConfig.cleanupFallbackModel,
       modelCooldown,
+      { baseUrl: nextConfig.chatBaseUrl, timeoutMs: nextConfig.cleanupTimeoutMs },
     ),
     rewrite: new GroqRewriteProvider(
       nextConfig.groqApiKey,
       nextConfig.cleanupModel,
       nextConfig.cleanupFallbackModel,
       modelCooldown,
+      { baseUrl: nextConfig.chatBaseUrl, timeoutMs: nextConfig.cleanupTimeoutMs },
     ),
   };
   void logger.info("dictation.providers.ready", {

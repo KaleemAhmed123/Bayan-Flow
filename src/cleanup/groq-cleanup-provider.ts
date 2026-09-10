@@ -9,10 +9,10 @@ import {
   withReasoningEffort,
 } from "../llm/completion-budget.js";
 import { withModelFallback } from "../llm/model-fallback.js";
+import { buildClientOptions, type EndpointSettings } from "../llm/client-options.js";
 import type { ModelCooldownManager } from "../llm/model-cooldown.js";
 import { buildCleanupPrompt, type CleanupOptions, type CleanupProvider } from "./cleanup-provider.js";
 
-const GROQ_TIMEOUT_MS = 45_000;
 
 export class GroqCleanupProvider implements CleanupProvider {
   private readonly client: Groq;
@@ -20,8 +20,14 @@ export class GroqCleanupProvider implements CleanupProvider {
   private readonly fallbackModel: string;
   private readonly cooldown?: ModelCooldownManager;
 
-  constructor(apiKey: string, model: string, fallbackModel = "", cooldown?: ModelCooldownManager) {
-    this.client = new Groq({ apiKey, timeout: GROQ_TIMEOUT_MS, maxRetries: 0 });
+  constructor(
+    apiKey: string,
+    model: string,
+    fallbackModel = "",
+    cooldown?: ModelCooldownManager,
+    endpoint: EndpointSettings = {},
+  ) {
+    this.client = new Groq(buildClientOptions(apiKey, endpoint));
     this.model = model;
     this.fallbackModel = fallbackModel.trim();
     this.cooldown = cooldown;

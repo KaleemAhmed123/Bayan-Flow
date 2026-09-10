@@ -93,3 +93,48 @@ test("a retired id in the fallback slot is remapped like any other model", () =>
     "openai/gpt-oss-20b",
   );
 });
+
+/* ---------------------------------------------------------------- *
+ * Retired-model remapping is scoped to the hosted provider
+ * ---------------------------------------------------------------- */
+
+test("a retired model id is still remapped on the hosted provider", () => {
+  const config = normalizeConfig({ cleanupModel: "llama-3.3-70b-versatile" });
+  assert.equal(config.cleanupModel, "openai/gpt-oss-120b");
+});
+
+test("a custom endpoint never has its model ids rewritten", () => {
+  // The deprecation table describes one provider. A local runner serving a model
+  // that happens to share a retired name must not be silently pointed at a
+  // hosted model the user never asked for.
+  const config = normalizeConfig({
+    chatBaseUrl: "http://localhost:11434/v1",
+    cleanupModel: "llama-3.3-70b-versatile",
+    cleanupFallbackModel: "llama-3.1-8b-instant",
+    contextModel: "qwen/qwen3-32b",
+  });
+
+  assert.equal(config.cleanupModel, "llama-3.3-70b-versatile");
+  assert.equal(config.cleanupFallbackModel, "llama-3.1-8b-instant");
+  assert.equal(config.contextModel, "qwen/qwen3-32b");
+});
+
+test("the two endpoints are scoped independently", () => {
+  // Local speech-to-text with hosted cleanup is a real setup, so one custom
+  // base URL must not switch remapping off for the other stage.
+  const config = normalizeConfig({
+    transcriptionBaseUrl: "http://localhost:8080/v1",
+    cleanupModel: "llama-3.3-70b-versatile",
+  });
+
+  assert.equal(config.cleanupModel, "openai/gpt-oss-120b", "chat is still hosted, so it remaps");
+});
+
+test("timeouts default to zero and reject nonsense", () => {
+  const defaults = normalizeConfig({});
+  assert.equal(defaults.cleanupTimeoutMs, 0);
+
+  const messy = normalizeConfig({ cleanupTimeoutMs: -5, contextTimeoutMs: 30_000 });
+  assert.equal(messy.cleanupTimeoutMs, 0, "a negative timeout means use the default");
+  assert.equal(messy.contextTimeoutMs, 30_000);
+});

@@ -971,8 +971,8 @@ not damage them.
 - [x] 22. Hotkey layer as a pure reducer (F4)
 - [x] 23. Stop the hotkey leaking to the focused app (B5) — via globalShortcut, not a native hook
 - [ ] 24. UI Automation read path with clipboard fallback (C7)
-- [ ] 25. Configurable OpenAI-compatible base URLs (G4)
-- [ ] 26. Per-stage timeout overrides (B6)
+- [x] 25. Configurable OpenAI-compatible base URLs (G4)
+- [x] 26. Per-stage timeout overrides (B6)
 - [ ] 27. Paste Again global shortcut (C3)
 - [ ] 28. Press-enter voice command (C4)
 - [ ] 29. Shortcut start delay (C6)
@@ -1719,6 +1719,54 @@ context snapshot hit in the entry above.
 
 **Still unverified from Task 23:** whether the OS actually suppresses the hotkey and whether uiohook
 still sees it. Neither has been run yet.
+
+### 2026-09-10 — Tasks 25 and 26: one place that decides where a call goes and how long it may take
+
+G4 and B6 are the same shape of problem, so they were fixed the same way and in the same change.
+
+Four modules constructed a client — transcription, cleanup, rewrite and context — and every one of
+them had the endpoint and the timeout baked in as a module constant: `GROQ_TIMEOUT_MS = 45_000`
+written out three separate times, plus `CONTEXT_TIMEOUT_MS`. That is the exact shape that produced
+two separate bugs when `completion-budget` was bypassed, so endpoint and timeout now get the same
+treatment: **`src/llm/client-options.ts`, one function, and no call site doing its own arithmetic.**
+All four constants are deleted, so there is nothing left to copy.
+
+The request shape was already OpenAI-compatible, which is what every local runner speaks, so
+pointing at a local server is a base URL and nothing else. Two of them, because speech-to-text and
+chat are usually different services.
+
+**The trap G4 warned about, handled.** The retired-model table describes one provider's
+deprecations. Applying it to a custom endpoint would silently rewrite a local model named
+`llama-3.3-70b-versatile` into a hosted `openai/gpt-oss-120b` the user never asked for.
+`normalizeConfig` now computes `hostedTranscription` and `hostedChat` up front and passes them into
+`modelOr`, so remapping is off per endpoint. **The two are scoped independently**, because local
+speech-to-text with hosted cleanup is a real setup and one custom URL must not disable remapping for
+the other stage. There is a test for exactly that.
+
+Decisions:
+
+- **A half-typed URL falls back to the default rather than throwing.** Settings saves as the user
+  types, and being unable to send anything because a URL is mid-edit would be worse than the problem.
+  A wrong-but-valid URL still reports itself clearly as a connection error on the next request.
+  `http` and `https` only, so no `file://`.
+- **Trailing slashes are stripped**, because the SDK joins paths itself and `/v1/` produces `//v1//`.
+- **Context keeps its own shorter default (8s, not 45s).** It is best-effort and must never delay a
+  dictation, so it does not inherit the long ceiling a local model needs for transcription.
+- **`maxRetries: 0` is asserted in a test.** The app decides retries — rate limits are never retried,
+  they switch to the fallback model — and an SDK retrying underneath that would double-bill and hide
+  the reason.
+- **Timeouts are capped at ten minutes.** Beyond that a "timeout" is indistinguishable from a hang.
+- **Zero means "use the default".** The settings box shows empty rather than `0`, because a literal
+  zero reads like "no time allowed".
+
+Settings gained a "Where the models run" card in the **Advanced** tab: two base URLs and three
+per-stage timeouts, with the copy stating plainly that leaving them empty uses Groq and that filling
+the chat one stops the retired-name rewriting.
+
+Suite: **269 tests, all passing** (15 new). `npm run local:smoke` passes.
+
+**Unverified:** no local model has actually been pointed at yet. The unit tests cover the option
+building and the remap scoping, but "does a real llama.cpp server answer this" needs one run.
 
 ## 7. Explanation
 

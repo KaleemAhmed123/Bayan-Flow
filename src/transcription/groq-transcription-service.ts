@@ -5,8 +5,8 @@ import { logger } from "../observability/app-logger.js";
 import { normalizeError, retryTransient } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 import { buildTranscriptionPrompt } from "./transcription-prompt.js";
+import { buildClientOptions, type EndpointSettings } from "../llm/client-options.js";
 
-const GROQ_TIMEOUT_MS = 45_000;
 const WEAK_AVG_LOGPROB_THRESHOLD = -0.5;
 const HIGH_NO_SPEECH_THRESHOLD = 0.75;
 
@@ -94,8 +94,8 @@ export class GroqTranscriptionService {
   private readonly client: Groq;
   private readonly model: string;
 
-  constructor(apiKey: string, model: string) {
-    this.client = new Groq({ apiKey, timeout: GROQ_TIMEOUT_MS, maxRetries: 0 });
+  constructor(apiKey: string, model: string, endpoint: EndpointSettings = {}) {
+    this.client = new Groq(buildClientOptions(apiKey, endpoint));
     this.model = model;
   }
 

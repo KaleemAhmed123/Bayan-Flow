@@ -211,26 +211,6 @@ body {
   padding: var(--bf-space-3) var(--bf-space-4);
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
-  gap: var(--bf-space-4);
-  align-items: start;
-}
-
-.column {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--bf-space-4);
-}
-
-@media (max-width: 880px) {
-  .grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 /* ---------- fields ---------- */
 
 .field {
@@ -287,14 +267,6 @@ input::placeholder {
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--bf-space-3);
   align-items: start;
-  border-top: 1px solid var(--bf-line);
-  cursor: pointer;
-  padding-top: var(--bf-space-3);
-}
-
-.card .toggle:first-of-type {
-  border-top: 0;
-  padding-top: 0;
 }
 
 .toggle input[type="checkbox"] {
@@ -375,11 +347,6 @@ input::placeholder {
 }
 
 /* ---------- readiness rail ---------- */
-
-.rail {
-  position: sticky;
-  top: var(--bf-space-5);
-}
 
 .health {
   display: flex;
@@ -966,4 +933,340 @@ kbd {
 
 .debug-badge.is-changed {
   color: var(--bf-busy);
+}
+
+/* ================================================================
+ * Settings: tabs, cross-tab search, sticky save bar.
+ *
+ * The Settings page used to be one 22-control scroll in a column
+ * squeezed to ~376px by a 280px status rail. The rail moved to Home,
+ * the controls moved into five tab panels, and a search box cuts
+ * across all five so you never have to guess which tab something
+ * is in.
+ * ================================================================ */
+
+/* ---------- search ---------- */
+
+.searchbox {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-2);
+  border: 1px solid var(--bf-line-strong);
+  border-radius: var(--bf-radius-md);
+  background: var(--bf-bg-input);
+  padding: 0 var(--bf-space-3);
+  transition: border-color var(--bf-fast) var(--bf-ease);
+}
+
+.searchbox:focus-within {
+  border-color: var(--bf-accent);
+}
+
+.searchbox-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: var(--bf-text-faint);
+}
+
+.searchbox input[type="search"] {
+  min-height: 40px;
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  color: var(--bf-text);
+  font-family: inherit;
+  font-size: var(--bf-size-md);
+  outline: none;
+  padding: 0;
+}
+
+/* The native clear affordance is a grey X on a dark field; it reads as debris. */
+.searchbox input[type="search"]::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.searchbox-kbd {
+  flex: 0 0 auto;
+  border-color: var(--bf-line);
+  color: var(--bf-text-faint);
+  font-size: 10px;
+  padding: 3px 6px;
+}
+
+.searchbox:focus-within .searchbox-kbd {
+  visibility: hidden;
+}
+
+/* ---------- tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--bf-line);
+}
+
+.tab {
+  position: relative;
+  min-height: var(--bf-hit);
+  border: 0;
+  border-radius: var(--bf-radius-sm) var(--bf-radius-sm) 0 0;
+  background: transparent;
+  color: var(--bf-text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--bf-size-md);
+  font-weight: 600;
+  padding: 0 var(--bf-space-3);
+  transition: color var(--bf-fast) var(--bf-ease), background var(--bf-fast) var(--bf-ease);
+}
+
+.tab:hover {
+  background: var(--bf-bg-hover);
+  color: var(--bf-text);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--bf-accent);
+  outline-offset: -2px;
+}
+
+.tab.is-active {
+  color: var(--bf-text);
+}
+
+/* The underline sits on the tablist border, so the active tab joins its panel. */
+.tab.is-active::after {
+  position: absolute;
+  right: var(--bf-space-2);
+  bottom: -1px;
+  left: var(--bf-space-2);
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--bf-accent);
+  content: "";
+}
+
+/* ---------- panels ---------- */
+
+.panels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bf-space-4);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bf-space-4);
+}
+
+/*
+ * Which tab a card belongs to only matters in search results, where several
+ * tabs are on screen at once. In normal tab browsing the tab strip already
+ * says where you are, so the label would be repeating itself.
+ */
+.panel-tag {
+  display: none;
+}
+
+.panels.is-searching .panel-tag {
+  display: block;
+  margin: 0;
+  color: var(--bf-accent);
+  font-size: var(--bf-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Search hides individual rows, which would leave a stray divider on whichever
+   row happens to survive at the top of a card. */
+.panels.is-searching .toggle {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* ---------- fields ---------- */
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-2);
+}
+
+.field-row select {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/*
+ * Two-up only when there is room. At the shipped 920px window this is a single
+ * column; it pays off when the user widens the window.
+ */
+.field-pair {
+  display: grid;
+  gap: var(--bf-space-4);
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--bf-line-strong);
+  border-radius: var(--bf-radius-sm);
+  background: var(--bf-bg-input);
+  color: var(--bf-text);
+  font-family: inherit;
+  font-size: var(--bf-size-md);
+  outline: none;
+  transition: border-color var(--bf-fast) var(--bf-ease);
+}
+
+select {
+  min-height: 38px;
+  padding: 0 8px;
+}
+
+textarea {
+  line-height: 1.6;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+select:focus,
+textarea:focus {
+  border-color: var(--bf-accent);
+}
+
+textarea::placeholder {
+  color: var(--bf-text-faint);
+}
+
+/* Label kept for screen readers where the card heading already says it on screen. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- toggles ---------- */
+
+/*
+ * A toggle is a <div>, not a <label>, because the "More" expander lives inside
+ * it: inside a <label> every click on the summary would also flip the checkbox.
+ * The title carries the `for`, so the label target is still generous.
+ */
+.toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bf-space-3);
+}
+
+.toggle-list > .toggle + .toggle {
+  border-top: 1px solid var(--bf-line);
+  padding-top: var(--bf-space-3);
+}
+
+.toggle-title {
+  cursor: pointer;
+}
+
+.toggle input[type="checkbox"]:disabled,
+.toggle input[type="checkbox"]:disabled + .toggle-copy .toggle-title {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* ---------- "More" expander ---------- */
+
+.more {
+  margin-top: 2px;
+}
+
+.more > summary {
+  display: inline-block;
+  color: var(--bf-text-muted);
+  font-size: var(--bf-size-xs);
+  font-weight: 600;
+  padding: 2px 0;
+}
+
+.more > summary:hover {
+  color: var(--bf-text);
+}
+
+.more > summary::before {
+  content: "+ ";
+}
+
+.more[open] > summary::before {
+  content: "- ";
+}
+
+.more[open] > summary {
+  margin-bottom: 4px;
+}
+
+.more > summary:focus-visible {
+  outline: 2px solid var(--bf-accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ---------- sticky save bar ---------- */
+
+/*
+ * Sticky against .content, the scrolling ancestor, so Save is reachable from any
+ * scroll position instead of only from the bottom of the page.
+ */
+.savebar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-top: var(--bf-space-2);
+  background: var(--bf-bg-app);
+  padding-bottom: var(--bf-space-4);
+}
+
+.save-state {
+  color: var(--bf-text-faint);
+  font-size: var(--bf-size-xs);
+}
+
+.save-state[data-state="dirty"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--bf-busy);
+  font-weight: 640;
+}
+
+.save-state[data-state="dirty"]::before {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--bf-radius-pill);
+  background: var(--bf-busy);
+  content: "";
+}
+
+/* The floating status toast would otherwise land on top of the sticky save bar. */
+.statusbar {
+  bottom: 72px;
+  z-index: 3;
+}
+
+/* The actionable setup callout on Home. */
+#setupNotice {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-3);
+}
+
+#setupNotice span {
+  flex: 1 1 auto;
 }

@@ -18,3 +18,7 @@ asar-check/
 
 # local reference checkout, not part of this repo
 ref-temp/
+
+# playwright mcp scratch dumps
+.playwright-mcp/
+settings-general.png

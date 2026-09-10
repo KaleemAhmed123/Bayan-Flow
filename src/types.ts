@@ -62,6 +62,17 @@ export type AppConfig = {
   contextModel: string;
   /** Newline-separated window-title substrings that are never looked at. */
   contextBlocklist: string;
+  /**
+   * OpenAI-compatible endpoint for speech-to-text. Empty means the hosted
+   * provider. Set this to point at a local runner.
+   */
+  transcriptionBaseUrl: string;
+  /** OpenAI-compatible endpoint for cleanup, rewrite and context. */
+  chatBaseUrl: string;
+  /** Per-stage request ceilings in milliseconds. Zero means use the default. */
+  transcriptionTimeoutMs: number;
+  cleanupTimeoutMs: number;
+  contextTimeoutMs: number;
   /** Chosen audio input. Empty means the system default. */
   microphoneId: string;
   /** Skip cleanup and keep the speaker's exact words. Translation still applies. */

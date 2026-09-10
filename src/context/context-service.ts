@@ -14,6 +14,7 @@
 import Groq from "groq-sdk";
 import { desktopCapturer } from "../electron.js";
 import { estimateOutputTokens, isTruncated, withReasoningEffort } from "../llm/completion-budget.js";
+import { buildClientOptions, DEFAULT_CONTEXT_TIMEOUT_MS, type EndpointSettings } from "../llm/client-options.js";
 import { logger } from "../observability/app-logger.js";
 import { normalizeError } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
@@ -27,7 +28,6 @@ import {
   type AppContextSnapshot,
 } from "./context-rules.js";
 
-const CONTEXT_TIMEOUT_MS = 8_000;
 /**
  * Longest the dictation will wait at stop-time for a summary that has not
  * arrived. Past this we ship the metadata we already have. The user is waiting
@@ -51,6 +51,8 @@ export type ContextCaptureSettings = {
   model: string;
   blocklist: string[];
   apiKey: string;
+  /** Where the context model lives, and how long it may take. */
+  endpoint?: EndpointSettings;
 };
 
 export type WindowSignalProvider = () => Promise<{ title: string; appName?: string } | null>;
@@ -121,6 +123,12 @@ export class AppContextService {
   private metadataOnly: AppContextSnapshot = EMPTY_CONTEXT;
   private cancelled = false;
   private readonly createClient: (apiKey: string) => ChatClientLike;
+  /**
+   * Set on every `start`, because settings can change between dictations and
+   * the client is built lazily inside the capture rather than in the
+   * constructor.
+   */
+  private endpoint: EndpointSettings = {};
 
   constructor(
     private readonly getWindowSignals: WindowSignalProvider,
@@ -128,7 +136,10 @@ export class AppContextService {
   ) {
     this.createClient =
       createClient ??
-      ((apiKey) => new Groq({ apiKey, timeout: CONTEXT_TIMEOUT_MS, maxRetries: 0 }) as unknown as ChatClientLike);
+      ((apiKey) =>
+        new Groq(
+          buildClientOptions(apiKey, this.endpoint, DEFAULT_CONTEXT_TIMEOUT_MS),
+        ) as unknown as ChatClientLike);
   }
 
   /**
@@ -136,6 +147,7 @@ export class AppContextService {
    * dictation path must not be able to fail because context did.
    */
   start(settings: ContextCaptureSettings, context: OperationContext = {}): void {
+    this.endpoint = settings.endpoint ?? {};
     this.cancel();
     this.cancelled = false;
 

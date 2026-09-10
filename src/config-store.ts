@@ -5,6 +5,7 @@ import { parseHotkey } from "./hotkey/hotkey-parser.js";
 import { logger } from "./observability/app-logger.js";
 import { normalizeError } from "./observability/errors.js";
 import { DEFAULT_CONTEXT_BLOCKLIST, parseBlocklist, serializeBlocklist } from "./context/context-rules.js";
+import { isDefaultEndpoint } from "./llm/client-options.js";
 import type { AppConfig } from "./types.js";
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -33,6 +34,13 @@ const DEFAULT_CONFIG: AppConfig = {
   contextScreenshotEnabled: false,
   contextModel: "qwen/qwen3.6-27b",
   contextBlocklist: serializeBlocklist(DEFAULT_CONTEXT_BLOCKLIST),
+  // Empty base URLs mean the hosted provider; zero timeouts mean the built-in
+  // defaults. Both are "unset" rather than a value we have to keep in sync.
+  transcriptionBaseUrl: "",
+  chatBaseUrl: "",
+  transcriptionTimeoutMs: 0,
+  cleanupTimeoutMs: 0,
+  contextTimeoutMs: 0,
   microphoneId: "",
   preserveExactWording: false,
   instructionGuardEnabled: true,
@@ -194,6 +202,11 @@ function decryptApiKey(value: string, secureStorage: SecureStorage | undefined):
 }
 
 export function normalizeConfig(input: Partial<AppConfig>): AppConfig {
+  // Whether each endpoint still points at the provider whose deprecation table
+  // we carry. Computed before the model fields, because they depend on it.
+  const hostedTranscription = isDefaultEndpoint(input.transcriptionBaseUrl);
+  const hostedChat = isDefaultEndpoint(input.chatBaseUrl);
+
   return {
     groqApiKey: stringOr(input.groqApiKey, process.env.GROQ_API_KEY || ""),
     hotkey: hotkeyOr(input.hotkey, DEFAULT_CONFIG.hotkey),
@@ -204,17 +217,17 @@ export function normalizeConfig(input: Partial<AppConfig>): AppConfig {
     historyEnabled: booleanOr(input.historyEnabled, DEFAULT_CONFIG.historyEnabled),
     cleanupEnabled: booleanOr(input.cleanupEnabled, DEFAULT_CONFIG.cleanupEnabled),
     openAtLogin: booleanOr(input.openAtLogin, DEFAULT_CONFIG.openAtLogin),
-    transcriptionModel: modelOr(input.transcriptionModel, DEFAULT_CONFIG.transcriptionModel),
-    cleanupModel: modelOr(input.cleanupModel, DEFAULT_CONFIG.cleanupModel),
+    transcriptionModel: modelOr(input.transcriptionModel, DEFAULT_CONFIG.transcriptionModel, hostedTranscription),
+    cleanupModel: modelOr(input.cleanupModel, DEFAULT_CONFIG.cleanupModel, hostedChat),
     // An empty fallback is a legitimate choice, so it is not replaced by the
     // default the way an invalid one is.
-    cleanupFallbackModel: optionalModelOr(input.cleanupFallbackModel, DEFAULT_CONFIG.cleanupFallbackModel),
+    cleanupFallbackModel: optionalModelOr(input.cleanupFallbackModel, DEFAULT_CONFIG.cleanupFallbackModel, hostedChat),
     transcriptionLanguage: languageOr(input.transcriptionLanguage),
     outputLanguage: languageOr(input.outputLanguage),
     customVocabulary: normalizeVocabulary(input.customVocabulary),
     contextCaptureEnabled: booleanOr(input.contextCaptureEnabled, DEFAULT_CONFIG.contextCaptureEnabled),
     contextScreenshotEnabled: booleanOr(input.contextScreenshotEnabled, DEFAULT_CONFIG.contextScreenshotEnabled),
-    contextModel: modelOr(input.contextModel, DEFAULT_CONFIG.contextModel),
+    contextModel: modelOr(input.contextModel, DEFAULT_CONFIG.contextModel, hostedChat),
     // An empty blocklist is a real choice, but a MISSING one is not the same
     // thing: an older config that predates this setting must get the defaults,
     // not silently end up with no protection at all.
@@ -224,6 +237,11 @@ export function normalizeConfig(input: Partial<AppConfig>): AppConfig {
         : DEFAULT_CONFIG.contextBlocklist,
     // Device ids are opaque browser strings, so the only sane validation is a
     // length cap; a stale id is handled at record time, not here.
+    transcriptionBaseUrl: stringOr(input.transcriptionBaseUrl, DEFAULT_CONFIG.transcriptionBaseUrl),
+    chatBaseUrl: stringOr(input.chatBaseUrl, DEFAULT_CONFIG.chatBaseUrl),
+    transcriptionTimeoutMs: timeoutOr(input.transcriptionTimeoutMs, DEFAULT_CONFIG.transcriptionTimeoutMs),
+    cleanupTimeoutMs: timeoutOr(input.cleanupTimeoutMs, DEFAULT_CONFIG.cleanupTimeoutMs),
+    contextTimeoutMs: timeoutOr(input.contextTimeoutMs, DEFAULT_CONFIG.contextTimeoutMs),
     microphoneId: typeof input.microphoneId === "string" ? input.microphoneId.trim().slice(0, 200) : "",
     preserveExactWording: booleanOr(input.preserveExactWording, DEFAULT_CONFIG.preserveExactWording),
     instructionGuardEnabled: booleanOr(input.instructionGuardEnabled, DEFAULT_CONFIG.instructionGuardEnabled),
@@ -278,12 +296,12 @@ function languageOr(value: unknown): string {
   return LANGUAGE_TAG_PATTERN.test(language) ? language : "";
 }
 
-function optionalModelOr(value: unknown, fallback: string): string {
+function optionalModelOr(value: unknown, fallback: string, hosted = true): string {
   if (typeof value === "string" && !value.trim()) {
     return "";
   }
 
-  return modelOr(value, fallback);
+  return modelOr(value, fallback, hosted);
 }
 
 function hotkeyOr(value: unknown, fallback: string): string {
@@ -296,6 +314,11 @@ function hotkeyOr(value: unknown, fallback: string): string {
   }
 }
 
+/** Non-negative whole milliseconds. Anything else means "use the default". */
+function timeoutOr(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
+}
+
 function stringOr(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
@@ -304,11 +327,18 @@ function booleanOr(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function modelOr(value: unknown, fallback: string): string {
+/**
+ * `hosted` says whether calls still go to the provider whose deprecations this
+ * table describes. On a custom endpoint the remap is switched off: a local
+ * runner serving a model that happens to share a retired name must not have it
+ * silently rewritten into a hosted model the user never asked for, and a name
+ * we have never heard of must pass through untouched.
+ */
+function modelOr(value: unknown, fallback: string, hosted = true): string {
   const model = stringOr(value, fallback);
   if (model.length > MAX_MODEL_LENGTH || !DEFAULT_MODEL_PATTERN.test(model)) {
     return fallback;
   }
 
-  return RETIRED_MODELS.get(model) ?? model;
+  return hosted ? RETIRED_MODELS.get(model) ?? model : model;
 }

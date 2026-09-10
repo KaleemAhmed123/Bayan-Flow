@@ -56,10 +56,10 @@ read-only status list, in a single scrolling column.
 
 | # | Question | My recommendation | Your answer |
 |---|---|---|---|
-| 1 | Which tab split? | The five below. Named by the job the user came to do, not by the subsystem. | |
-| 2 | Where does the read-only status list go? | **Home page**, beside the setup checklist. "Is it working" is a Home question; Settings is for changing things. This also frees the full width. | |
-| 3 | Long help text? | Keep a **one-line** summary always visible, move the long tail behind a `More` expander on the six items that need it. Nothing is deleted. | |
-| 4 | Auto-save on change instead of a Save button? | **No.** Saving re-registers global hotkeys in the main process; a half-typed hotkey must not be applied. Keep an explicit Save, but make the bar sticky and show an unsaved-changes marker. | |
+| 1 | Which tab split? | The five below. Named by the job the user came to do, not by the subsystem. | **Approved** |
+| 2 | Where does the read-only status list go? | **Home page**, beside the setup checklist. "Is it working" is a Home question; Settings is for changing things. This also frees the full width. | **Home page** |
+| 3 | Long help text? | Keep a **one-line** summary always visible, move the long tail behind a `More` expander on the six items that need it. Nothing is deleted. | **One line + More** |
+| 4 | Auto-save on change instead of a Save button? | **No.** Saving re-registers global hotkeys in the main process; a half-typed hotkey must not be applied. Keep an explicit Save, but make the bar sticky and show an unsaved-changes marker. | **Keep Save, sticky bar** |
 
 ## 5. Plan
 
@@ -127,6 +127,10 @@ means guessing which one. So:
 ## 7. Updates
 
 - **2026-09-10** — Spec written. Awaiting approval on the four open questions.
+- **2026-09-10** — All four answers approved as recommended. Implementation started.
+  Noted in passing: the working tree carries an unfinished Debug page — `#page-debug`
+  exists in `settings.html` but `settings.js` has no `debug` key in its `pages` map, so
+  that nav button is inert. Left untouched by this task.
 
 ## 8. Explanation
 

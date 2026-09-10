@@ -1,8 +1,11 @@
 /*
  * The BayanFlow window.
  *
- * Four pages behind one sidebar: Home, History, Stats, Settings. Only one is in
- * the document flow at a time; the others carry `hidden`.
+ * Pages behind one sidebar. Only one is in the document flow at a time; the
+ * others carry `hidden`.
+ *
+ * Settings is itself five tab panels plus a search box that filters across all
+ * of them at once — see the tabs section at the bottom of this file.
  *
  * History and Stats both come from the same main-process store. Stats are not
  * counted here and not stored separately: they are derived from the same rows
@@ -23,6 +26,11 @@ const fields = {
   contextScreenshotEnabled: document.getElementById("contextScreenshotEnabled"),
   contextBlocklist: document.getElementById("contextBlocklist"),
   contextModel: document.getElementById("contextModel"),
+  transcriptionBaseUrl: document.getElementById("transcriptionBaseUrl"),
+  chatBaseUrl: document.getElementById("chatBaseUrl"),
+  transcriptionTimeoutMs: document.getElementById("transcriptionTimeoutMs"),
+  cleanupTimeoutMs: document.getElementById("cleanupTimeoutMs"),
+  contextTimeoutMs: document.getElementById("contextTimeoutMs"),
   preserveExactWording: document.getElementById("preserveExactWording"),
   instructionGuardEnabled: document.getElementById("instructionGuardEnabled"),
   microphoneId: document.getElementById("microphoneId"),
@@ -82,6 +90,12 @@ function showPage(name) {
 
   document.getElementById("content").scrollTop = 0;
 
+  // The save bar is part of the Settings page, so it leaves with it. Say so
+  // rather than letting an uncommitted change vanish behind another page.
+  if (name !== "settings" && dirty) {
+    setStatus("You left Settings with unsaved changes.");
+  }
+
   // Both pages read the store, so they reload on every visit rather than going
   // stale behind a dictation the user just finished in another window.
   if (name === "history") {
@@ -112,6 +126,12 @@ window.settingsBridge.load().then((config) => {
   fields.contextScreenshotEnabled.checked = config.contextScreenshotEnabled;
   fields.contextBlocklist.value = config.contextBlocklist || "";
   fields.contextModel.value = config.contextModel || "";
+  fields.transcriptionBaseUrl.value = config.transcriptionBaseUrl || "";
+  fields.chatBaseUrl.value = config.chatBaseUrl || "";
+  // Zero means "use the default", and an empty box reads better than a 0.
+  setTimeoutField(fields.transcriptionTimeoutMs, config.transcriptionTimeoutMs);
+  setTimeoutField(fields.cleanupTimeoutMs, config.cleanupTimeoutMs);
+  setTimeoutField(fields.contextTimeoutMs, config.contextTimeoutMs);
   fields.preserveExactWording.checked = config.preserveExactWording;
   fields.instructionGuardEnabled.checked = config.instructionGuardEnabled;
   fields.debugCaptureEnabled.checked = config.debugCaptureEnabled;
@@ -158,6 +178,11 @@ document.getElementById("save").addEventListener("click", async () => {
       contextScreenshotEnabled: fields.contextCaptureEnabled.checked && fields.contextScreenshotEnabled.checked,
       contextBlocklist: fields.contextBlocklist.value,
       contextModel: fields.contextModel.value.trim() || "qwen/qwen3.6-27b",
+      transcriptionBaseUrl: fields.transcriptionBaseUrl.value.trim(),
+      chatBaseUrl: fields.chatBaseUrl.value.trim(),
+      transcriptionTimeoutMs: readTimeoutField(fields.transcriptionTimeoutMs),
+      cleanupTimeoutMs: readTimeoutField(fields.cleanupTimeoutMs),
+      contextTimeoutMs: readTimeoutField(fields.contextTimeoutMs),
       preserveExactWording: fields.preserveExactWording.checked,
       instructionGuardEnabled: fields.instructionGuardEnabled.checked,
       microphoneId: fields.microphoneId.value,
@@ -178,6 +203,7 @@ document.getElementById("save").addEventListener("click", async () => {
       renderNavState(saved.health || {});
     }
 
+    markClean();
     setStatus("Saved. BayanFlow is ready.", "success");
   } catch (error) {
     setStatus(error?.message || "Could not save. Check the key, hotkeys, and model names.", "error");
@@ -951,3 +977,213 @@ function formatMs(value) {
 document.getElementById("debugRefresh").addEventListener("click", () => {
   void loadDebugCase();
 });
+
+/* ---------------- settings tabs, search, and dirty state ---------------- */
+
+/*
+ * Settings is five tab panels plus one search box that cuts across all of them.
+ *
+ * Tabs are for browsing. Search is for when you already know the name of the
+ * thing: it shows every matching row from every tab at once, each under the
+ * name of the tab it lives in, so you never have to guess which tab to open.
+ *
+ * Search never rewrites the DOM. It only sets `hidden` on rows, cards, and
+ * panels that do not match, so every input keeps its element, its id, its
+ * listeners, and its current value. Clearing the box puts the tabs back exactly
+ * as they were.
+ */
+
+const settingsTabs = document.getElementById("settingsTabs");
+const settingsPanels = document.getElementById("settingsPanels");
+const settingsSearch = document.getElementById("settingsSearch");
+const settingsSearchEmpty = document.getElementById("settingsSearchEmpty");
+const saveState = document.getElementById("saveState");
+
+const tabButtons = Array.from(settingsTabs.querySelectorAll(".tab"));
+const panelNodes = Array.from(settingsPanels.querySelectorAll(".panel"));
+const searchRows = Array.from(settingsPanels.querySelectorAll(".field, .toggle"));
+const searchCards = Array.from(settingsPanels.querySelectorAll(".card"));
+
+/** The tab to return to when the search box is cleared. */
+let activeTab = "general";
+let dirty = false;
+
+function showTab(name) {
+  if (!tabButtons.some((button) => button.dataset.tab === name)) {
+    return;
+  }
+
+  activeTab = name;
+
+  for (const button of tabButtons) {
+    const selected = button.dataset.tab === name;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", String(selected));
+    // Roving tabindex: one stop for the whole strip, then arrow keys inside it.
+    button.tabIndex = selected ? 0 : -1;
+  }
+
+  for (const panel of panelNodes) {
+    panel.hidden = panel.dataset.tab !== name;
+  }
+}
+
+settingsTabs.addEventListener("click", (event) => {
+  const button = event.target.closest(".tab");
+  if (button) {
+    showTab(button.dataset.tab);
+  }
+});
+
+settingsTabs.addEventListener("keydown", (event) => {
+  const step = { ArrowRight: 1, ArrowLeft: -1, Home: "first", End: "last" }[event.key];
+  if (step === undefined) {
+    return;
+  }
+
+  event.preventDefault();
+  const current = tabButtons.findIndex((button) => button.dataset.tab === activeTab);
+  const index =
+    step === "first"
+      ? 0
+      : step === "last"
+        ? tabButtons.length - 1
+        : (current + step + tabButtons.length) % tabButtons.length;
+
+  showTab(tabButtons[index].dataset.tab);
+  tabButtons[index].focus();
+});
+
+/**
+ * Filters every row in every panel against the query.
+ *
+ * The haystack is the row's own text plus its `data-keywords`. Row text already
+ * includes the label, the help copy, and — because a <select> owns its options —
+ * every language name, so "urdu" finds the language rows without a keyword list.
+ * `data-keywords` only carries the words that are NOT on screen: "shortcut" for
+ * the hotkey fields, "blacklist" for the blocklist, and so on.
+ */
+function applySettingsSearch() {
+  const query = settingsSearch.value.trim().toLowerCase();
+  const searching = query.length > 0;
+
+  settingsPanels.classList.toggle("is-searching", searching);
+  settingsTabs.hidden = searching;
+
+  if (!searching) {
+    for (const row of searchRows) {
+      row.hidden = false;
+    }
+    for (const card of searchCards) {
+      card.hidden = false;
+    }
+    settingsSearchEmpty.hidden = true;
+    showTab(activeTab);
+    return;
+  }
+
+  let hits = 0;
+  for (const panel of panelNodes) {
+    let panelHits = 0;
+
+    for (const card of panel.querySelectorAll(".card")) {
+      let cardHits = 0;
+
+      for (const row of card.querySelectorAll(".field, .toggle")) {
+        const haystack = `${row.textContent} ${row.dataset.keywords || ""}`.toLowerCase();
+        const hit = haystack.includes(query);
+        row.hidden = !hit;
+        if (hit) {
+          cardHits += 1;
+        }
+      }
+
+      card.hidden = cardHits === 0;
+      panelHits += cardHits;
+    }
+
+    panel.hidden = panelHits === 0;
+    hits += panelHits;
+  }
+
+  settingsSearchEmpty.hidden = hits > 0;
+}
+
+settingsSearch.addEventListener("input", applySettingsSearch);
+
+settingsSearch.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && settingsSearch.value) {
+    // Swallow it: on this page Escape means "drop the filter", not "close".
+    event.preventDefault();
+    settingsSearch.value = "";
+    applySettingsSearch();
+  }
+});
+
+/* ---------------- unsaved changes ---------------- */
+
+/*
+ * Saving re-registers the global hotkeys in the main process, so it stays an
+ * explicit act rather than firing on every keystroke — a half-typed hotkey must
+ * never be applied. The trade is that a change can be forgotten, so the sticky
+ * bar says out loud whether there is anything uncommitted.
+ */
+function markDirty() {
+  if (dirty) {
+    return;
+  }
+
+  dirty = true;
+  saveState.textContent = "Unsaved changes";
+  saveState.dataset.state = "dirty";
+}
+
+function markClean() {
+  dirty = false;
+  saveState.textContent = "All changes saved";
+  delete saveState.dataset.state;
+}
+
+// Only real user edits count. Every programmatic write — the initial load,
+// setApiKeyMasked, populateMicrophones — sets `.value` directly, which fires
+// nothing, so the bar stays clean until the user actually types or clicks.
+for (const node of Object.values(fields)) {
+  node.addEventListener("input", markDirty);
+  node.addEventListener("change", markDirty);
+}
+
+document.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey)) {
+    return;
+  }
+
+  if (event.key === "s" && !pages.settings.hidden) {
+    event.preventDefault();
+    document.getElementById("save").click();
+    return;
+  }
+
+  // Only on Settings. Yanking someone off the History page mid-search because
+  // they hit the browser's find shortcut would be worse than not handling it.
+  if (event.key === "f" && !pages.settings.hidden) {
+    event.preventDefault();
+    settingsSearch.focus();
+    settingsSearch.select();
+  }
+});
+
+document.getElementById("setupNoticeGo").addEventListener("click", () => {
+  showPage("settings");
+  showTab("general");
+  fields.groqApiKey.focus();
+});
+
+/** Zero is stored as "unset", and an empty box says that better than a 0. */
+function setTimeoutField(field, value) {
+  field.value = typeof value === "number" && value > 0 ? String(value) : "";
+}
+
+function readTimeoutField(field) {
+  const parsed = Number.parseInt(field.value.trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
