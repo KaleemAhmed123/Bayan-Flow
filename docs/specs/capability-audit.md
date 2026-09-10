@@ -1573,6 +1573,52 @@ device open. Options left are all worse than the prompt — a permanently lit mi
 a periodic re-warm. The prompt tells the truth and costs nothing, so this stays as it is unless the
 delay proves worse on another machine.
 
+### 2026-09-10 — stop tuning the threshold; decide on whether audio was captured
+
+The dock prompt shipped and the first dictation of the next run still failed:
+
+```
+gesture: hold  heldMs: 837
+recorder.audio.empty
+dictation.no_speech  recorderStopMs: 456  micWasStillOpening: true
+```
+
+**Raising the threshold from 400ms to 800ms did not fix this and was never going to.** Every press
+duration observed from this user, across the whole log:
+
+```
+128 158 163 199 203 216 242 243 302 368 429 449 454 462 475 480 488 493 558 591 837 922 1365
+```
+
+There is no gap. A slow tap and a short hold occupy the same range, so any single number
+misclassifies some of them, and picking a third number would just be a third guess. This is exactly
+the failure mode this file already warns about.
+
+**The fix is to stop guessing from duration and decide on a fact we already hold.** A hold only
+means push-to-talk if there was something to talk into. When the key comes up before the microphone
+finished opening, the press was spent waiting on hardware rather than on speech, and stopping ends
+the dictation with an empty file. `handleDictationKeyUp` now requires `isRecorderReady` before it
+treats a hold as push-to-talk; otherwise it latches, which keeps the user's intent — they pressed
+the key because they want to dictate — at the cost of one extra tap to finish.
+
+This removes the whole failure class rather than narrowing it. It holds regardless of how long the
+press was or how slow the device is, so it does not need retuning on a different machine.
+
+`dictation.gesture` now carries `latchedWhileStarting`, so a genuine tap stays tellable apart from a
+hold that arrived too early to count.
+
+**Two message fixes from the same screenshot.** "Microphone was still starting · press again, it is
+ready now" was truncated by the dock to "...it is r...", so it is now "Microphone was still starting
+· try again". The starting hint became plain "Starting microphone…" — the previous "wait for the
+prompt" named a prompt that does not exist as a distinct thing, when the visible change to "Tap
+hotkey to finish" is itself the signal.
+
+Suite: **241 tests, all passing.** `npm run local:smoke` passes.
+
+**The 800ms threshold is kept.** It is still the better number once the microphone is open, because a
+half-second hold captures almost nothing worth sending. It is simply no longer load-bearing for this
+failure.
+
 ## 7. Explanation
 
 ### What changed

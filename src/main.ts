@@ -346,7 +346,7 @@ function showListening(): void {
     // key-up — so the honest hint is decided in one place rather than at each
     // call site.
     hint: !isRecorderReady
-      ? "Starting microphone · wait for the prompt"
+      ? "Starting microphone…"
       : isLatched
         ? "Tap hotkey to finish"
         : "Release to finish · Esc cancels",
@@ -677,14 +677,32 @@ function handleDictationKeyUp(heldMs: number): void {
     return;
   }
 
-  if (classifyPress(heldMs) === "hold") {
+  // A hold only means push-to-talk if there was something to talk into. When the
+  // key comes up before the microphone finished opening, the press was spent
+  // waiting on hardware rather than on speech, and stopping now ends the
+  // dictation with an empty file. Latching instead keeps the intent — the user
+  // pressed the key because they want to dictate — and costs them one extra tap
+  // to finish.
+  //
+  // This is deliberately not another threshold. Measured presses ran from 128ms
+  // to 1,365ms with no clean gap, so no single number separates a slow tap from
+  // a short hold. Whether audio was actually being captured is a fact rather
+  // than a guess, so the decision is made on that instead.
+  const wantsPushToTalk = classifyPress(heldMs) === "hold" && isRecorderReady;
+
+  if (wantsPushToTalk) {
     void logger.info("dictation.gesture", { gesture: "hold", heldMs });
     void stopRecording();
     return;
   }
 
   isLatched = true;
-  void logger.info("dictation.gesture", { gesture: "tap_latch", heldMs });
+  void logger.info("dictation.gesture", {
+    gesture: "tap_latch",
+    heldMs,
+    // Distinguishes "the user tapped" from "the user held, but too early to matter".
+    latchedWhileStarting: !isRecorderReady,
+  });
   showListening();
 }
 
@@ -1646,7 +1664,7 @@ function formatEmptyRecordingMessage(reason: RecorderStopReason, micWasStillOpen
   // sends them looking for a fault that is not theirs. Telling them to press
   // again is also actionable: the device is warm by the time they read it.
   if (micWasStillOpening) {
-    return "Microphone was still starting · press again, it is ready now";
+    return "Microphone was still starting · try again";
   }
 
   if (reason === "silence") {
