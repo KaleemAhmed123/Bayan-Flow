@@ -1530,6 +1530,49 @@ press behind it, an unmapped keycode, right-hand modifiers, and detach clearing 
 
 Suite: **241 tests, all passing.** `npm run local:smoke` passes.
 
+### 2026-09-10 — the pre-warm underdelivered, and the dock was lying about listening
+
+**Measured result of the startup pre-warm, first dictation after a restart:**
+
+```
+gesture: hold  heldMs: 922
+recorder.audio.empty
+dictation.no_speech  recorderStopMs: 450
+```
+
+Cold start fell from **819ms to 450ms**. It did not go away. Warming the device once at startup is
+not enough, because Windows re-initialises the capture device on each open; keeping the stream alive
+would fix it and is exactly what we refused to do, since it lights the microphone indicator for as
+long as the app runs. **The pre-warm is kept — 370ms is real and it costs nothing — but it is a
+saving, not a fix, and the entry above overstated what it would do.**
+
+The honest message did work. `recorderStopMs: 450` cleared the 250ms bar, so the user was told the
+microphone was still starting rather than being blamed for silence. Sessions two and three in the
+same run stopped in 1ms and 33ms and both succeeded.
+
+**Chasing that turned up a worse bug that had been there all along.** `startRecording()` called
+`showListening()` *before* awaiting `recorder.start()`. The dock said "Release to finish" while the
+microphone was still opening, so anything said in that window was lost — **and this was never
+specific to holds.** A tap latches and the user starts speaking immediately, into a device that is
+not yet recording. Every dictation has been quietly losing its opening moment.
+
+**Fix:** `isRecorderReady` tracks whether the device has actually opened. `showListening()` renders
+"Starting microphone · wait for the prompt" until it has, and the real hint afterwards. The decision
+lives inside `showListening()` rather than at the call sites, because both entry paths run through
+it — the initial view, and the latch on key-up that can fire while the start is still in flight. The
+view is repainted once `recorder.start()` resolves, guarded on `isRecording` so a hold that already
+moved the dock to "working" is not painted back to "listening".
+
+No new dock view kind and no renderer change: the existing `listening` view already carries a hint
+string.
+
+Suite: **241 tests, all passing.** `npm run local:smoke` passes.
+
+**Open question, not chased:** whether the remaining 450ms can be removed at all without holding the
+device open. Options left are all worse than the prompt — a permanently lit microphone indicator, or
+a periodic re-warm. The prompt tells the truth and costs nothing, so this stays as it is unless the
+delay proves worse on another machine.
+
 ## 7. Explanation
 
 ### What changed

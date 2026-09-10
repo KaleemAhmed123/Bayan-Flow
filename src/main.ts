@@ -68,6 +68,12 @@ let cancelHotkeyListener: HotkeyListener | null = null;
 let isRecording = false;
 let isProcessing = false;
 let isLatched = false;
+/**
+ * Whether the microphone has actually opened. Opening it costs ~450ms even with
+ * the device warmed at startup, and telling the user we are listening before
+ * that loses whatever they say in the meantime.
+ */
+let isRecorderReady = false;
 let rewriteInFlight = false;
 let activeSessionId: string | null = null;
 let activePasteTarget: PasteTarget | null = null;
@@ -336,7 +342,14 @@ function showListening(): void {
   dock.setView({
     kind: "listening",
     latched: isLatched,
-    hint: isLatched ? "Tap hotkey to finish" : "Release to finish · Esc cancels",
+    // Both entry paths run through here — the initial view and the latch on
+    // key-up — so the honest hint is decided in one place rather than at each
+    // call site.
+    hint: !isRecorderReady
+      ? "Starting microphone · wait for the prompt"
+      : isLatched
+        ? "Tap hotkey to finish"
+        : "Release to finish · Esc cancels",
   });
 }
 
@@ -696,6 +709,7 @@ async function startRecording(): Promise<void> {
   }
 
   isRecording = true;
+  isRecorderReady = false;
   recordingStartedAt = Date.now();
   activeSessionId = createId("session");
   const context = currentContext();
@@ -725,6 +739,12 @@ async function startRecording(): Promise<void> {
       maxDurationMs: MAX_RECORDING_DURATION_MS + 10_000,
       maxAudioBytes: MAX_AUDIO_BYTES,
     });
+    // The device is open now, so the prompt can stop hedging. Repainting also
+    // covers a tap that latched while we were still waiting.
+    isRecorderReady = true;
+    if (isRecording) {
+      showListening();
+    }
     recordingLimitTimer = setTimeout(() => {
       if (isRecording && !isProcessing) {
         void logger.warn("dictation.recording.max_duration_reached", context);

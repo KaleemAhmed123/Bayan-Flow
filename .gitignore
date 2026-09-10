@@ -17,5 +17,4 @@ release/
 asar-check/
 
 # local reference checkout, not part of this repo
-freeflow/
 ref-temp/
