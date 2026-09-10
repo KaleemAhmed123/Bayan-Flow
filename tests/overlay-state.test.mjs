@@ -125,10 +125,20 @@ test("the narrow idle pill still centres and stays on screen", () => {
   assert.ok(pill.x + pill.width <= primary.x + primary.width);
 });
 
-test("tap and hold are told apart at the 400ms boundary", () => {
+test("tap and hold are told apart at the 800ms boundary", () => {
   assert.equal(classifyPress(0), "tap");
-  assert.equal(classifyPress(399), "tap");
-  assert.equal(classifyPress(400), "hold");
+  assert.equal(classifyPress(799), "tap");
+  assert.equal(classifyPress(800), "hold");
   assert.equal(classifyPress(5_000), "hold");
   assert.equal(classifyPress(Number.NaN), "tap", "a missing timestamp must not latch silently");
+});
+
+test("an unhurried tap is not mistaken for push-to-talk", () => {
+  // Real presses that the old 400ms threshold classified as holds and then
+  // stopped before the microphone had opened. Nobody dictates in half a second.
+  for (const heldMs of [429, 449, 454, 462, 475, 480, 488, 493, 591]) {
+    assert.equal(classifyPress(heldMs), "tap", `${heldMs}ms is a slow tap, not a hold`);
+  }
+
+  assert.equal(classifyPress(1_365), "hold", "a deliberate hold still latches push-to-talk");
 });

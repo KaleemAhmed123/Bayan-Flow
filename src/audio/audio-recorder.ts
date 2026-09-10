@@ -52,6 +52,11 @@ export class AudioRecorder {
   private devicesResolver: ((devices: AudioInputDevice[]) => void) | null = null;
   private devicesTimer: NodeJS.Timeout | null = null;
   private activeMaxAudioBytes = DEFAULT_LIMITS.maxAudioBytes;
+  /**
+   * The start currently in flight, so `stop()` can wait for it. Settles either
+   * way — `start()` has its own timeout — so awaiting it cannot hang.
+   */
+  private pendingStart: Promise<void> | null = null;
   private readonly session = new RecorderSessionController();
   private unexpectedErrorHandler: ((error: Error, context: OperationContext) => void | Promise<void>) | null = null;
 
@@ -268,13 +273,24 @@ export class AudioRecorder {
       microphoneId: limits.microphoneId || "",
     });
 
-    return started.finally(() => this.clearStartTimer());
+    this.pendingStart = started.finally(() => this.clearStartTimer());
+    return this.pendingStart;
   }
 
-  stop(context: OperationContext = {}, reason: RecorderStopReason = "manual"): Promise<RecorderStopResult> {
+  async stop(context: OperationContext = {}, reason: RecorderStopReason = "manual"): Promise<RecorderStopResult> {
     if (!this.window) {
       throw new Error("Recorder window is not initialized.");
     }
+
+    // Opening a microphone takes the renderer several hundred milliseconds. A
+    // press shorter than that used to stop a recorder that had not started:
+    // `recorder:stop` arrived while the renderer was still inside
+    // getUserMedia, so it wrote either nothing or a headerless fragment that
+    // Groq rejects with "could not process file - is it a valid media file?",
+    // and the late `recorder:started` came back for a session already torn
+    // down, logging "Invalid recorder sessionId". Waiting here means the
+    // MediaRecorder is always running before we ask it to stop.
+    await this.pendingStart?.catch(() => {});
 
     if (!context.sessionId || context.sessionId !== this.session.snapshot().activeSessionId) {
       throw new Error("Recorder session is not active.");

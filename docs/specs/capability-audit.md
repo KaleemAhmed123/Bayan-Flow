@@ -1410,6 +1410,70 @@ there is nothing to read.
 Suite: **225 tests, all passing.** The prompt change is unverified in the wild — it needs a dictation
 with a real person's name on screen.
 
+### 2026-09-10 — dictation failing at the start: two bugs, one visible symptom
+
+Reported as "no speech detected the moment I start it, and sometimes other errors". The log held
+three different failures and they were all the same story.
+
+```
+recorder.started.invalid   x15   "Invalid recorder sessionId."
+groq.transcription.failed   x4   400 "could not process file - is it a valid media file?"
+dictation.start.failed      x4   "Recording timed out while starting."
+```
+
+One failing session, in order:
+
+```
+43.820  recorder.start
+44.287  dictation.gesture   gesture: hold   heldMs: 475     <- key released
+44.292  recorder.stop
+44.293  recorder.audio.empty   audioBytes: 0
+44.753  recorder.started.invalid                            <- microphone finished opening
+```
+
+**The stop was sent while the microphone was still opening.** `AudioRecorder.stop()` posted
+`recorder:stop` to the renderer without waiting for the start handshake, so the renderer received it
+mid-`getUserMedia`. It then wrote either nothing (`audioBytes: 0`) or a headerless fragment — 3,879
+and 16,437 bytes in two other sessions — which is exactly what Groq means by "could not process file
+- is it a valid media file?". The `recorder:started` that arrived 460ms later belonged to a session
+already torn down, hence fifteen `Invalid recorder sessionId` warnings.
+
+**Why it happened so often is a second, separate bug.** Every press in the log, grouped by how it was
+classified:
+
+```
+tap_latch   128 158 163 199 203 216 242 243 302 368
+hold        429 449 454 462 475 480 488 493 591 ... 1365
+```
+
+Only the 1365 was a deliberate hold. Everything from 429 to 591 was an ordinary tap pressed a little
+slowly, and `HOLD_THRESHOLD_MS = 400` cut straight through the middle of the user's natural tap
+distribution. Each of those became push-to-talk, stopped on release after under 600ms, and hit the
+race above. **400ms is the Discord push-to-talk convention and it is wrong for dictation.** A game
+key gets stabbed mid-fight; a dictation hold means "I am talking for as long as I hold this", and
+nobody says anything in under 800ms.
+
+**Two fixes:**
+
+1. `AudioRecorder.stop()` now awaits the in-flight start before sending `recorder:stop`. This is the
+   correctness fix and it sits in the one method every stop path routes through — manual, cancel and
+   max-duration. `start()` already carries a 5s timeout, so the await always settles and cannot hang.
+2. `HOLD_THRESHOLD_MS` raised from 400 to 800, with the measured press distribution recorded in the
+   comment so the number is not "tuned" back down without the evidence.
+
+**Verification.** `tests/recorder-start-stop-race.test.mjs` asserts `recorder:stop` never reaches a
+renderer that has not acked its start, and that a failed start still lets stop reject cleanly rather
+than hang. The test was confirmed to fail with the fix removed — `recorder:stop must not reach a
+renderer that is still starting` — and pass with it, so it is a real regression test and not a
+tautology. `tests/overlay-state.test.mjs` gained a case asserting the nine real press durations above
+now classify as taps while 1365ms still holds.
+
+Suite: **228 tests, all passing.** `npm run local:smoke` passes, 3 non-blank dock frames.
+
+**Not done:** making the hold threshold configurable. One constant backed by measurements beats a
+setting nobody knows how to tune. If a second user's presses land differently, that is the moment to
+add one, and task 29 is already the place for it.
+
 ## 7. Explanation
 
 ### What changed

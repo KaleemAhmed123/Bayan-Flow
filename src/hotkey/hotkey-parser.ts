@@ -6,10 +6,22 @@ type ParsedHotkey = {
 /**
  * Below this, a press counts as a tap (latch recording on).
  * At or above it, a press counts as a hold (push-to-talk, release finishes).
- * 400ms is the Discord push-to-talk convention; long enough that a deliberate
- * tap never registers as a hold, short enough that holding feels instant.
+ *
+ * This was 400ms, the Discord push-to-talk convention, and it was wrong for
+ * dictation. Real presses from one user split like this:
+ *
+ *   taps  128 158 163 199 203 216 242 243 302 368
+ *   holds 429 449 454 462 475 480 488 493 591 ... 1365
+ *
+ * Only the 1365 was a deliberate hold. Everything from 429 to 591 was a tap
+ * pressed a little slowly, and every one of them was treated as push-to-talk
+ * and stopped on release — before the microphone had even finished opening.
+ *
+ * Discord's number suits a game key you stab mid-fight. Dictation is different:
+ * a hold means "I am speaking for as long as I hold this", and nobody says
+ * anything in under 800ms. Anything shorter is a tap that was not quick.
  */
-export const HOLD_THRESHOLD_MS = 400;
+export const HOLD_THRESHOLD_MS = 800;
 
 export type PressKind = "tap" | "hold";
 
