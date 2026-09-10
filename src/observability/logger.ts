@@ -146,13 +146,36 @@ export function sanitize(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).map(([key, fieldValue]) => [
       key,
-      shouldRedactKey(key) ? REDACTED : sanitize(fieldValue),
+      // Key-based redaction exists to keep TEXT out of logs. A boolean or a
+      // number carries no content, so redacting it only destroys the
+      // diagnostics we kept the field for: `usedScreenshot: true` became
+      // "[redacted]" and made a real bug harder to see.
+      shouldRedactKey(key) && !isContentFree(fieldValue) ? REDACTED : sanitize(fieldValue),
     ]),
   );
 }
 
+/** True for values that cannot carry user content whatever the field is called. */
+function isContentFree(value: unknown): boolean {
+  return typeof value === "boolean" || typeof value === "number" || value === null || value === undefined;
+}
+
+/**
+ * Field names whose values are user content or credentials and must never reach
+ * a log file.
+ *
+ * The context group — window titles, activity summaries, screenshots, selected
+ * text — is as sensitive as the transcript group. A window title reads
+ * "Re: Q3 layoffs — Gmail"; an activity summary describes what is on screen.
+ * Call sites already log counts rather than content, and this is the backstop
+ * for when one of them eventually forgets.
+ */
 function shouldRedactKey(key: string): boolean {
-  return /api[-_]?key|authorization|secret|password|transcript|cleanedText|finalText|rawText/i.test(key) || /^token$/i.test(key);
+  return (
+    /api[-_]?key|authorization|secret|password|transcript|cleanedText|finalText|rawText/i.test(key) ||
+    /windowTitle|activity|contextSummary|screenshot|dataUrl|selectedText|vocabularyTerm(?!s\b)/i.test(key) ||
+    /^token$/i.test(key)
+  );
 }
 
 function looksSecret(value: string): boolean {

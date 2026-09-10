@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { GroqCleanupProvider } from "../dist/cleanup/groq-cleanup-provider.js";
 import { ConfigStore } from "../dist/config-store.js";
-import { normalizeError } from "../dist/observability/errors.js";
+import { normalizeError, setOnlineChecker } from "../dist/observability/errors.js";
 import { logger } from "../dist/observability/app-logger.js";
 import { FileLogSink, Logger, sanitize } from "../dist/observability/logger.js";
 import { GroqRewriteProvider } from "../dist/rewrite/groq-rewrite-provider.js";
@@ -50,9 +50,32 @@ test("sanitize redacts likely secrets in nested data", () => {
 test("normalizes retryable and non-retryable errors", () => {
   const rateLimit = Object.assign(new Error("Too many requests"), { status: 429 });
   const badRequest = Object.assign(new Error("Bad request"), { status: 400 });
+  const serverError = Object.assign(new Error("Upstream blew up"), { status: 503 });
+  const timeout = Object.assign(new Error("Timed out"), { code: "ETIMEDOUT" });
 
-  assert.equal(normalizeError("cleanup", rateLimit).retryable, true);
+  // A rate limit is deliberately NOT retryable. Re-sending the same request
+  // spends more quota to earn the same 429; the model fallback handles it.
+  assert.equal(normalizeError("cleanup", rateLimit).retryable, false);
   assert.equal(normalizeError("cleanup", badRequest).retryable, false);
+  assert.equal(normalizeError("cleanup", serverError).retryable, true);
+  assert.equal(normalizeError("cleanup", timeout).retryable, true);
+});
+
+test("a rate limit reports how long to wait when the provider says", () => {
+  const withHeader = Object.assign(new Error("Too many requests"), {
+    status: 429,
+    headers: { "retry-after": "45" },
+  });
+
+  const normalized = normalizeError("cleanup", withHeader);
+  assert.equal(normalized.retryAfterSeconds, 45);
+  assert.equal(normalized.userMessage, "Groq rate limit reached. Try again in 45s.");
+
+  const longWait = Object.assign(new Error("Too many requests"), {
+    status: 429,
+    headers: { "retry-after": "600" },
+  });
+  assert.equal(normalizeError("cleanup", longWait).userMessage, "Groq rate limit reached. Try again in about 10 min.");
 });
 
 test("normalizes specific Groq user-facing errors", () => {
@@ -137,4 +160,75 @@ test("groq rewrite logs metadata without content", async () => {
   assert.equal(serialized.includes("private selected text"), false);
   assert.equal(serialized.includes("professional output"), false);
   assert.equal(entries.some((entry) => entry.event === "groq.rewrite.success"), true);
+});
+
+/* ---------------------------------------------------------------- *
+ * Offline vs slow provider
+ * ---------------------------------------------------------------- */
+
+test("a connection fault is blamed on the network only when we are offline", () => {
+  const timeout = Object.assign(new Error("socket hang up"), { code: "ETIMEDOUT" });
+
+  // Default is online, so the provider gets the blame — being wrong this way
+  // shows a provider message for a network fault, which is the milder error.
+  setOnlineChecker(() => true);
+  assert.equal(normalizeError("transcription", timeout).userMessage, "Groq is temporarily unavailable");
+
+  setOnlineChecker(() => false);
+  assert.equal(
+    normalizeError("transcription", timeout).userMessage,
+    "You appear to be offline. Check your internet connection.",
+  );
+
+  setOnlineChecker(() => true);
+});
+
+test("offline failures are not retried", () => {
+  // Retrying into a dead network burns the user's time for a guaranteed failure.
+  const dnsFailure = Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
+
+  setOnlineChecker(() => true);
+  assert.equal(normalizeError("transcription", dnsFailure).retryable, true);
+
+  setOnlineChecker(() => false);
+  assert.equal(normalizeError("transcription", dnsFailure).retryable, false);
+
+  setOnlineChecker(() => true);
+});
+
+test("being offline does not change a real provider rejection", () => {
+  // A 400 or 404 is the provider answering. The network was clearly fine enough
+  // to carry the reply, so reachability is irrelevant.
+  setOnlineChecker(() => false);
+  const notFound = Object.assign(new Error("model_not_found"), { status: 404 });
+  assert.match(normalizeError("cleanup", notFound).userMessage, /no longer available/);
+  setOnlineChecker(() => true);
+});
+
+test("the offline dock failure offers no retry button", async () => {
+  const { recoveryForFailure } = await import("../dist/overlay/overlay-state.js");
+  // A retry while the network is down fails again and makes the app look broken
+  // rather than the connection.
+  assert.equal(recoveryForFailure("offline").action, "dismiss");
+  assert.equal(recoveryForFailure("transcription").action, "retry");
+});
+
+test("redaction protects text but keeps flags and counts readable", () => {
+  // `usedScreenshot: true` was being logged as "[redacted]", destroying the
+  // diagnostic the field existed for. A boolean cannot carry user content.
+  const cleaned = sanitize({
+    usedScreenshot: true,
+    screenshotDataUrl: "data:image/jpeg;base64,AAAA",
+    summaryChars: 42,
+    activity: "The user is replying to an email",
+    windowTitle: "Inbox - Gmail",
+    vocabularyTerms: 3,
+  });
+
+  assert.equal(cleaned.usedScreenshot, true);
+  assert.equal(cleaned.summaryChars, 42);
+  assert.equal(cleaned.vocabularyTerms, 3);
+  assert.equal(cleaned.screenshotDataUrl, "[redacted]");
+  assert.equal(cleaned.activity, "[redacted]");
+  assert.equal(cleaned.windowTitle, "[redacted]");
 });
