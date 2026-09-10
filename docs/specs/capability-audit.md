@@ -1348,6 +1348,68 @@ tolerate the field being absent, with a test that says why.
 
 Suite: **225 tests, all passing.**
 
+### 2026-09-10 — NAMES works; it was asking for the wrong kind of name
+
+First run of the NAMES design, and the first time `visibleNameCount` has ever appeared in the log:
+
+```
+context.screenshot.captured  chars: 59191
+context.infer.success  618ms  usedScreenshot: true  summaryChars: 200  visibleNameCount: 7
+```
+
+**The plumbing is verified.** Screenshot captured, two-part answer parsed, seven names carried into
+the cleanup prompt, 618ms, no error at any stage. The spelling was still wrong.
+
+The exported debug case gave the reason outright. The seven names were:
+
+```
+Visual Studio Code, Bayan-Flow, Claude Code, Windows, PowerShell, npm, node
+```
+
+Seven correct proper nouns. Every one of them application chrome. **Not one person's name.**
+
+The prompt asked for `<comma-separated list of proper nouns visible on screen>`, and the model did
+exactly that. A user interface is saturated with proper nouns — title bar, status bar, terminal tabs,
+file names — and they fill the twelve-name cap long before a real name is reached. They are also
+precisely the names speech-to-text already gets right. `npm` and `Windows` are everywhere in
+Whisper's training data. `Ayeesha` is not. **The list spent its whole budget on the words that never
+needed it.**
+
+Everything downstream then behaved correctly, which is why nothing looked broken. `Ayesha` is not a
+phonetic match for any of those seven, so the copy-exactly rule in the cleanup prompt correctly did
+nothing. There was no bug in the cleanup prompt, the parser, the precedence rule, or the transport.
+**One wrong word in one instruction, four components obeying it faithfully.**
+
+**Fix:** `CONTEXT_SYSTEM_PROMPT` now asks for people and organisations, states why the list exists
+(spellings speech-to-text would get wrong), and names the categories to leave out — application
+names, window and tab titles, menu items, buttons, file names, and common developer tools. `NONE` is
+called out as a good answer when no person is on screen.
+
+**Rejected: filtering chrome out in code.** The obvious version — drop any name that appears in the
+window title — has a real failure mode. A Gmail compose titled `Compose: Ayeesha - Gmail` would have
+the one name we want stripped by our own filter. The prompt is the right place for a judgement about
+which names matter.
+
+**Two things this run also settled, both from the same case file:**
+
+1. **The test was not the test we meant to run.** `windowTitle` was
+   `.gitignore - Bayan-Flow - Visual Studio Code`. The dictation went into VS Code, not a Gmail
+   compose. `Ayeesha` was on screen only inside the Claude Code chat panel.
+2. **The spelling is lost at transcription, not at cleanup.** In the case file, `transcript.raw` —
+   straight from Whisper, before cleanup runs — already reads `Ayesha`. `transcript.final` reads
+   `Ayesha` too. Cleanup changed `these kind of` to `these kinds of` and dropped a `So`; it never
+   touched the name. Vocabulary held only `Arpan` and `minhaz`.
+
+That second point is the durable one. **Context and vocabulary fix different halves of this problem
+and neither replaces the other.** Vocabulary biases Whisper at transcription time, which is where a
+spoken name loses its spelling; it is deterministic and it is the right tool for a name you say
+often. Context can only repair a spelling *after* transcription, and only when the name is visibly on
+screen. For a name that is spoken but never displayed, no amount of context work can help, because
+there is nothing to read.
+
+Suite: **225 tests, all passing.** The prompt change is unverified in the wild — it needs a dictation
+with a real person's name on screen.
+
 ## 7. Explanation
 
 ### What changed

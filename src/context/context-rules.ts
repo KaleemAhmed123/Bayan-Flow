@@ -258,19 +258,31 @@ Context rules:
  * So NAMES is collected separately and under a copy-exactly instruction. It
  * never passes through prose, which is what lets `Ayeesha` reach the cleanup
  * prompt intact.
+ *
+ * The first version of this asked for "proper nouns", and that was the wrong
+ * category. Dictating in VS Code returned `Visual Studio Code, Bayan-Flow,
+ * Claude Code, Windows, PowerShell, npm, node` — seven correct proper nouns,
+ * all of them application chrome, and not the one person's name on the screen.
+ * A UI is saturated with proper nouns, and they fill the cap before a real name
+ * is reached. They are also the names speech-to-text already gets right, so
+ * they cost the list everything and return nothing. We now ask for people and
+ * organisations, and say plainly which words not to send.
  */
 export const CONTEXT_SYSTEM_PROMPT = [
   "You report what a computer user is doing right now, for a speech-to-text cleanup pipeline.",
   "Reply in exactly this format, two lines, nothing else:",
   "ACTIVITY: <two sentences: what the user is doing and what they are about to write>",
-  "NAMES: <comma-separated list of proper nouns visible on screen, or the word NONE>",
+  "NAMES: <comma-separated list of people and organisations visible on screen, or the word NONE>",
   "",
   "Rules for NAMES:",
   "- Copy each name EXACTLY as it appears, character for character, including unusual spellings.",
   "- Never correct, normalise, or standardise a spelling. 'Ayeesha' stays 'Ayeesha', never 'Ayesha'.",
-  "- Include people's names, recipient names taken from email addresses, company names, product names, and project names.",
+  "- INCLUDE people's names, recipient names taken from email addresses, company and client names, team and project names, and any word whose spelling looks unusual.",
+  "- EXCLUDE the software the user is looking at: application names, window and tab titles, menu items, buttons, file names, and common developer tools such as Windows, Chrome, npm, node, PowerShell, or Visual Studio Code.",
+  "- The point of this list is spellings a speech-to-text engine would get wrong. It already spells common software correctly; listing it only crowds out the names that matter.",
+  "- If you must choose, people and organisations come first.",
   "- For an email address, give the name part as written, not the whole address.",
-  "- List only what is actually visible. Never guess.",
+  "- List only what is actually visible. Never guess. NONE is a good answer when no person or organisation is on screen.",
   "",
   "Rules for ACTIVITY: describe only what you can see, and say you are unsure rather than inventing.",
   "No markdown, no commentary, no extra lines.",
