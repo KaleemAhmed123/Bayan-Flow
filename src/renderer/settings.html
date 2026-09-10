@@ -6,148 +6,476 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self'"
     />
-    <title>BayanFlow Settings</title>
+    <title>BayanFlow</title>
     <link rel="stylesheet" href="./tokens.css" />
     <link rel="stylesheet" href="./settings.css" />
   </head>
   <body>
-    <main class="shell">
-      <header class="hero">
-        <img class="brand-mark" src="../assets/tray-icon.ico" alt="" />
-        <div class="brand-copy">
-          <h1>BayanFlow</h1>
-          <p class="subtitle">Think out loud. Ship clean text.</p>
-        </div>
-        <span class="spacer"></span>
-        <button class="btn" id="testMic" type="button">Test microphone</button>
-      </header>
-
-      <section class="callout" id="setupNotice" hidden>
-        Add your Groq API key below, then save. Nothing works until the key is set.
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <h2>Get started</h2>
-          <p>Four steps, once.</p>
-        </div>
-        <ol class="checklist" id="setupChecklist"></ol>
-      </section>
-
-      <div class="grid">
-        <div class="column">
-          <section class="card">
-            <div class="card-head">
-              <h2>Access</h2>
-              <p>Your key stays encrypted on this machine and is never sent anywhere but Groq.</p>
-            </div>
-
-            <label class="field" for="groqApiKey">
-              <span class="field-label">Groq API key</span>
-              <input id="groqApiKey" type="password" autocomplete="off" />
-            </label>
-
-            <label class="field" for="hotkey">
-              <span class="field-label">Dictation hotkey</span>
-              <input id="hotkey" type="text" />
-              <span class="field-help">
-                <strong>Hold</strong> it, speak, release to paste. <strong>Tap</strong> it to keep recording
-                hands-free, then tap again to finish. Esc cancels. Needs at least one modifier.
-              </span>
-            </label>
-
-            <label class="field" for="inputAssistHotkey">
-              <span class="field-label">Rewrite hotkey</span>
-              <input id="inputAssistHotkey" type="text" />
-              <span class="field-help">
-                Opens the rewrite menu for the text in your focused input. Default: Ctrl+Shift+Enter.
-              </span>
-            </label>
-          </section>
-
-          <section class="card">
-            <div class="card-head">
-              <h2>Behaviour</h2>
-              <p>How finished text reaches your app.</p>
-            </div>
-
-            <label class="toggle">
-              <input id="showDock" type="checkbox" />
-              <span class="toggle-copy">
-                <span class="toggle-title">Keep the pill on screen</span>
-                <span class="toggle-help">
-                  A small pill sits at the bottom centre of your screen. Hover it for Dictate and Rewrite,
-                  click it to start recording. Use the minus button on the pill to hide it for an hour.
-                </span>
-              </span>
-            </label>
-
-            <label class="toggle">
-              <input id="autoPaste" type="checkbox" />
-              <span class="toggle-copy">
-                <span class="toggle-title">Paste straight into the app</span>
-                <span class="toggle-help">
-                  On by default. BayanFlow verifies the original window before pasting; if the window changed
-                  or Windows blocked it, the text stays on your clipboard and the dock tells you. Turn this off
-                  to copy only.
-                </span>
-              </span>
-            </label>
-
-            <label class="toggle">
-              <input id="cleanupEnabled" type="checkbox" />
-              <span class="toggle-copy">
-                <span class="toggle-title">Polish transcripts with AI</span>
-                <span class="toggle-help">
-                  Fixes punctuation, filler words, and obvious speech-to-text slips before the text is inserted.
-                </span>
-              </span>
-            </label>
-
-            <label class="toggle">
-              <input id="openAtLogin" type="checkbox" />
-              <span class="toggle-copy">
-                <span class="toggle-title">Start when I sign in</span>
-                <span class="toggle-help">Keeps BayanFlow in the tray from the start of your Windows session.</span>
-              </span>
-            </label>
-          </section>
-
-          <section class="card">
-            <details>
-              <summary>Advanced models</summary>
-              <div class="details-body">
-                <label class="field" for="transcriptionModel">
-                  <span class="field-label">Transcription model</span>
-                  <input id="transcriptionModel" type="text" />
-                  <span class="field-help">Default: whisper-large-v3</span>
-                </label>
-
-                <label class="field" for="cleanupModel">
-                  <span class="field-label">Polish and rewrite model</span>
-                  <input id="cleanupModel" type="text" />
-                  <span class="field-help">Default: openai/gpt-oss-120b</span>
-                </label>
-              </div>
-            </details>
-          </section>
-        </div>
-
-        <aside class="card rail">
-          <div class="card-head">
-            <h2>Status</h2>
-            <p>Live state for this install.</p>
+    <div class="app">
+      <nav class="sidebar">
+        <div class="brand">
+          <img class="brand-mark" src="../assets/tray-icon.ico" alt="" />
+          <div class="brand-copy">
+            <strong>BayanFlow</strong>
+            <span>Think out loud</span>
           </div>
-          <ul class="health" id="health"></ul>
-        </aside>
-      </div>
+        </div>
 
-      <footer class="footer">
-        <span class="status" id="status" aria-live="polite"></span>
+        <div class="nav" id="nav" role="tablist">
+          <button class="nav-item is-active" type="button" data-page="home" role="tab">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M2.5 7L8 2.5 13.5 7v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V7z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span>Home</span>
+          </button>
+          <button class="nav-item" type="button" data-page="history" role="tab">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <path d="M8 4.8V8l2.2 1.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+            <span>History</span>
+          </button>
+          <button class="nav-item" type="button" data-page="stats" role="tab">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M3 13V8.5M8 13V3.5M13 13v-6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span>Stats</span>
+          </button>
+          <button class="nav-item" type="button" data-page="settings" role="tab">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <path
+                d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7L3.6 3.6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span>Settings</span>
+          </button>
+        </div>
+
         <span class="spacer"></span>
-        <button id="save" class="btn btn-primary" type="button">Save settings</button>
-      </footer>
-    </main>
+
+        <div class="nav-foot">
+          <span class="dot" id="navDot"></span>
+          <span id="navState">Checking…</span>
+        </div>
+      </nav>
+
+      <main class="content" id="content">
+        <!-- ---------------- Home ---------------- -->
+        <section class="page" id="page-home">
+          <header class="page-head">
+            <div>
+              <h1 id="homeGreeting">Welcome back</h1>
+              <p class="page-sub">Hold your hotkey, speak, let go. The text lands where your cursor is.</p>
+            </div>
+          </header>
+
+          <section class="callout" id="setupNotice" hidden>
+            Add your Groq API key in Settings, then save. Nothing works until the key is set.
+          </section>
+
+          <div class="tiles" id="homeTiles"></div>
+
+          <section class="card">
+            <div class="card-head">
+              <h2>Get started</h2>
+              <p>Four steps, once.</p>
+            </div>
+            <ol class="checklist" id="setupChecklist"></ol>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <h2>How to use it</h2>
+              <p>The whole app is two keys.</p>
+            </div>
+            <ul class="how">
+              <li><kbd id="howDictate">Ctrl+Shift+Space</kbd><span>Hold and speak. Let go to paste. Tap once to keep recording hands-free, tap again to finish. Esc cancels.</span></li>
+              <li><kbd id="howRewrite">Ctrl+Shift+Enter</kbd><span>Rewrite whatever is in the box you are typing in. Every action is on screen at once.</span></li>
+            </ul>
+          </section>
+        </section>
+
+        <!-- ---------------- History ---------------- -->
+        <section class="page" id="page-history" hidden>
+          <header class="page-head">
+            <div>
+              <h1>History</h1>
+              <p class="page-sub">Every dictation, what you said and what was inserted. Stored on this PC only.</p>
+            </div>
+            <span class="spacer"></span>
+            <button class="btn btn-danger" id="historyClear" type="button">Clear all</button>
+          </header>
+
+          <div class="toolbar">
+            <input id="historySearch" type="search" placeholder="Search your dictations" autocomplete="off" />
+            <span class="toolbar-count" id="historyCount"></span>
+          </div>
+
+          <div class="history-list" id="historyList"></div>
+
+          <p class="empty" id="historyEmpty" hidden>
+            Nothing here yet. Dictate something and it will show up.
+          </p>
+        </section>
+
+        <!-- ---------------- Stats ---------------- -->
+        <section class="page" id="page-stats" hidden>
+          <header class="page-head">
+            <div>
+              <h1>Stats</h1>
+              <p class="page-sub">Counted from your history. Clearing history resets these.</p>
+            </div>
+          </header>
+
+          <div class="tiles" id="statTiles"></div>
+
+          <section class="card">
+            <div class="card-head">
+              <h2>Last 7 days</h2>
+              <p>Words dictated per day.</p>
+            </div>
+            <div class="chart" id="chart"></div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <h2>Where you dictate</h2>
+              <p>The apps that receive the most of your speech.</p>
+            </div>
+            <ul class="apps" id="topApps"></ul>
+          </section>
+        </section>
+
+        <!-- ---------------- Settings ---------------- -->
+        <section class="page" id="page-settings" hidden>
+          <header class="page-head">
+            <div>
+              <h1>Settings</h1>
+              <p class="page-sub">Keys, hotkeys, and what happens to your text.</p>
+            </div>
+            <span class="spacer"></span>
+            <button class="btn" id="testMic" type="button">Test microphone</button>
+          </header>
+
+          <div class="grid">
+            <div class="column">
+              <section class="card">
+                <div class="card-head">
+                  <h2>Access</h2>
+                  <p>Your key stays encrypted on this machine and is never sent anywhere but Groq.</p>
+                </div>
+
+                <label class="field" for="groqApiKey">
+                  <span class="field-label">Groq API key</span>
+                  <input id="groqApiKey" type="password" autocomplete="off" />
+                </label>
+
+                <label class="field" for="microphoneId">
+                  <span class="field-label">Microphone</span>
+                  <select id="microphoneId">
+                    <option value="">System default</option>
+                  </select>
+                  <span class="field-help" id="microphoneHelp">
+                    Pick the input to record from. Leave on system default unless the wrong one is used.
+                  </span>
+                </label>
+
+                <label class="field" for="hotkey">
+                  <span class="field-label">Dictation hotkey</span>
+                  <input id="hotkey" type="text" />
+                  <span class="field-help">
+                    <strong>Hold</strong> it, speak, release to paste. <strong>Tap</strong> it to keep recording
+                    hands-free, then tap again to finish. Esc cancels. Needs at least one modifier.
+                  </span>
+                </label>
+
+                <label class="field" for="inputAssistHotkey">
+                  <span class="field-label">Rewrite hotkey</span>
+                  <input id="inputAssistHotkey" type="text" />
+                  <span class="field-help">
+                    Opens the rewrite menu for the text in your focused input. Default: Ctrl+Shift+Enter.
+                  </span>
+                </label>
+              </section>
+
+              <section class="card">
+                <div class="card-head">
+                  <h2>Behaviour</h2>
+                  <p>How finished text reaches your app.</p>
+                </div>
+
+                <label class="toggle">
+                  <input id="showDock" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Keep the pill on screen</span>
+                    <span class="toggle-help">
+                      A small pill sits at the bottom centre of your screen. Hover it for Dictate and Rewrite,
+                      click it to start recording. Use the minus button on the pill to hide it for an hour.
+                    </span>
+                  </span>
+                </label>
+
+                <label class="toggle">
+                  <input id="autoPaste" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Paste straight into the app</span>
+                    <span class="toggle-help">
+                      On by default. BayanFlow verifies the original window before pasting; if the window changed
+                      or Windows blocked it, the text stays on your clipboard and the dock tells you. Turn this off
+                      to copy only.
+                    </span>
+                  </span>
+                </label>
+
+                <label class="toggle">
+                  <input id="cleanupEnabled" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Polish transcripts with AI</span>
+                    <span class="toggle-help">
+                      Fixes punctuation, filler words, and obvious speech-to-text slips before the text is inserted.
+                    </span>
+                  </span>
+                </label>
+
+                <label class="toggle">
+                  <input id="openAtLogin" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Start when I sign in</span>
+                    <span class="toggle-help">Keeps BayanFlow in the tray from the start of your Windows session.</span>
+                  </span>
+                </label>
+              </section>
+
+              <section class="card">
+                <div class="card-head">
+                  <h2>History and stats</h2>
+                  <p>The only place BayanFlow keeps your words.</p>
+                </div>
+
+                <label class="toggle">
+                  <input id="historyEnabled" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Keep a history of what I dictate</span>
+                    <span class="toggle-help">
+                      Saves the raw transcript and the polished text to a file in your own app data folder, so the
+                      History and Stats pages have something to show. Nothing is uploaded. Logs never contain your
+                      words either way. Turn this off and BayanFlow forgets every dictation the moment it is pasted.
+                      The newest 500 are kept; Clear all on the History page deletes them.
+                    </span>
+                  </span>
+                </label>
+              </section>
+
+              <section class="card">
+                <h2 class="card-title">Language and vocabulary</h2>
+
+                <label class="field" for="transcriptionLanguage">
+                  <span class="field-label">Spoken language</span>
+                  <select id="transcriptionLanguage">
+                    <option value="">Detect automatically</option>
+                    <option value="en">English</option>
+                    <option value="ur">Urdu</option>
+                    <option value="hi">Hindi</option>
+                    <option value="ar">Arabic</option>
+                    <option value="bn">Bengali</option>
+                    <option value="pa">Punjabi</option>
+                    <option value="es">Spanish</option>
+                    <option value="fr">French</option>
+                    <option value="de">German</option>
+                    <option value="pt">Portuguese</option>
+                    <option value="tr">Turkish</option>
+                    <option value="id">Indonesian</option>
+                    <option value="ru">Russian</option>
+                    <option value="zh">Chinese</option>
+                    <option value="ja">Japanese</option>
+                  </select>
+                  <span class="field-help">
+                    Detect automatically works well for most people, including accented English. Pick a
+                    language only if detection keeps guessing wrong.
+                  </span>
+                </label>
+
+                <label class="field" for="outputLanguage">
+                  <span class="field-label">Paste in this language</span>
+                  <select id="outputLanguage">
+                    <option value="">Same as spoken</option>
+                    <option value="en">English</option>
+                    <option value="ur">Urdu</option>
+                    <option value="hi">Hindi</option>
+                    <option value="ar">Arabic</option>
+                    <option value="bn">Bengali</option>
+                    <option value="pa">Punjabi</option>
+                    <option value="es">Spanish</option>
+                    <option value="fr">French</option>
+                    <option value="de">German</option>
+                    <option value="pt">Portuguese</option>
+                    <option value="tr">Turkish</option>
+                    <option value="id">Indonesian</option>
+                    <option value="ru">Russian</option>
+                    <option value="zh">Chinese</option>
+                    <option value="ja">Japanese</option>
+                  </select>
+                  <span class="field-help">
+                    Speak one language, paste another. Needs `Polish transcripts with AI` turned on.
+                  </span>
+                </label>
+
+                <label class="field" for="customVocabulary">
+                  <span class="field-label">Custom vocabulary</span>
+                  <textarea id="customVocabulary" rows="6" spellcheck="false"
+                    placeholder="Aysha&#10;Zubair&#10;BayanFlow&#10;Kubernetes"></textarea>
+                  <span class="field-help">
+                    One name or term per line. Used to fix the spelling of words you actually said. It never
+                    adds a word you did not say. Tray menu has `Add clipboard word to vocabulary`.
+                  </span>
+                </label>
+              </section>
+
+              <section class="card">
+                <h2 class="card-title">Screen context</h2>
+
+                <label class="toggle">
+                  <input id="contextCaptureEnabled" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Use the app you are typing into</span>
+                    <span class="toggle-help">
+                      Sends the app name and window title with your transcript, so names and terms on
+                      screen get spelled correctly. No picture of your screen is sent.
+                    </span>
+                  </span>
+                </label>
+
+                <label class="toggle">
+                  <input id="contextScreenshotEnabled" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Also send a picture of the active window</span>
+                    <span class="toggle-help">
+                      Off by default. When on, a small image of the window you are typing into is sent to
+                      your AI provider with each dictation. Only that one window, never your whole screen,
+                      and never any window on the blocked list below. It is not saved to disk, not written
+                      to logs, and not included in exported diagnostics.
+                    </span>
+                  </span>
+                </label>
+
+                <label class="toggle">
+                  <input id="preserveExactWording" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Keep my exact words</span>
+                    <span class="toggle-help">
+                      Skips polishing entirely and pastes exactly what you said, filler and all.
+                      Translation still works if you set a paste language above.
+                    </span>
+                  </span>
+                </label>
+
+                <label class="toggle">
+                  <input id="instructionGuardEnabled" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Protect against the AI answering you</span>
+                    <span class="toggle-help">
+                      If you dictate something like "write a message to John", the AI sometimes writes it
+                      instead of just tidying your sentence. When that is detected, your original words are
+                      pasted instead. Leave this on unless it is misfiring.
+                    </span>
+                  </span>
+                </label>
+
+                <label class="toggle">
+                  <input id="debugCaptureEnabled" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Capture dictations for debugging</span>
+                    <span class="toggle-help">
+                      Off by default. Keeps only your most recent dictation — the audio, what was heard,
+                      and the exact instructions sent to the AI — so it can be exported from the tray menu
+                      and used to work out why an output was wrong. Nothing is uploaded. Turning this off
+                      deletes what was kept.
+                    </span>
+                  </span>
+                </label>
+
+                <label class="field" for="contextBlocklist">
+                  <span class="field-label">Never look at these windows</span>
+                  <textarea id="contextBlocklist" rows="6" spellcheck="false"></textarea>
+                  <span class="field-help">
+                    One entry per line. If a window title contains any of these, BayanFlow collects no
+                    context from it at all, not even the title. Matching ignores capitals.
+                  </span>
+                </label>
+              </section>
+
+              <section class="card">
+                <details>
+                  <summary>Advanced models</summary>
+                  <div class="details-body">
+                    <label class="field" for="transcriptionModel">
+                      <span class="field-label">Transcription model</span>
+                      <input id="transcriptionModel" type="text" />
+                      <span class="field-help">Default: whisper-large-v3</span>
+                    </label>
+
+                    <label class="field" for="cleanupModel">
+                      <span class="field-label">Polish and rewrite model</span>
+                      <input id="cleanupModel" type="text" />
+                      <span class="field-help">Default: openai/gpt-oss-120b</span>
+                    </label>
+
+                    <label class="field" for="contextModel">
+                      <span class="field-label">Screen context model</span>
+                      <input id="contextModel" type="text" />
+                      <span class="field-help">
+                        Must support images if you turn on the window picture. Default: qwen/qwen3.6-27b
+                      </span>
+                    </label>
+
+                    <label class="field" for="cleanupFallbackModel">
+                      <span class="field-label">Backup polish model</span>
+                      <input id="cleanupFallbackModel" type="text" />
+                      <span class="field-help">
+                        Used when the main model is rate limited or unavailable. Leave empty to disable.
+                        Default: openai/gpt-oss-20b
+                      </span>
+                    </label>
+                  </div>
+                </details>
+              </section>
+            </div>
+
+            <aside class="card rail">
+              <div class="card-head">
+                <h2>Status</h2>
+                <p>Live state for this install.</p>
+              </div>
+              <ul class="health" id="health"></ul>
+            </aside>
+          </div>
+
+          <footer class="footer">
+            <span class="spacer"></span>
+            <button id="save" class="btn btn-primary" type="button">Save settings</button>
+          </footer>
+        </section>
+      </main>
+    </div>
+
+    <div class="statusbar" id="status" aria-live="polite" hidden></div>
     <script src="./settings.js"></script>
   </body>
 </html>

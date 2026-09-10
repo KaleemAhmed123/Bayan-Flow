@@ -45,6 +45,7 @@ export type DockFailure =
   | "hotkey"
   | "recorder"
   | "transcription"
+  | "offline"
   | "polish"
   | "paste_blocked"
   | "generic";
@@ -52,8 +53,6 @@ export type DockFailure =
 export type DockMenuAction = {
   id: string;
   label: string;
-  /** 1 = always visible, 2 = revealed by "More". */
-  layer: 1 | 2;
 };
 
 /**
@@ -68,7 +67,7 @@ export type DockView =
   | { kind: "listening"; latched: boolean; hint: string }
   | { kind: "working"; label: string; startedAt: number }
   | { kind: "done"; label: string; tone: "ok" | "warn"; canRedo: boolean }
-  | { kind: "menu"; actions: DockMenuAction[]; expanded: boolean; note: string }
+  | { kind: "menu"; actions: DockMenuAction[]; note: string }
   | { kind: "error"; message: string; recovery: DockRecovery | null };
 
 /** Views the user can interact with by typing, so the window must take focus. */
@@ -138,6 +137,10 @@ export function recoveryForFailure(failure: DockFailure): DockRecovery | null {
       return { action: "settings", label: "Open Settings" };
     case "recorder":
       return { action: "settings", label: "Check microphone" };
+    case "offline":
+      // No retry button on purpose: pressing it while the network is down just
+      // fails again and makes the app look broken rather than the connection.
+      return { action: "dismiss", label: "Dismiss" };
     case "transcription":
       return { action: "retry", label: "Try again" };
     case "polish":

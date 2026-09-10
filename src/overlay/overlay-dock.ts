@@ -1,5 +1,5 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { rendererDir } from "../app-paths.js";
 import { BrowserWindow, ipcMain, screen } from "../electron.js";
 import { logger } from "../observability/app-logger.js";
 import {
@@ -17,8 +17,6 @@ import {
   type DockView,
   type Rect,
 } from "./overlay-state.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Window resize easing. Short enough to feel instant, long enough to read as motion. */
 const DOCK_TWEEN_MS = 150;
@@ -84,7 +82,7 @@ export class OverlayDock {
       // view flips this on, because its custom-instruction field needs keyboard focus.
       focusable: false,
       webPreferences: {
-        preload: path.join(__dirname, "..", "renderer", "dock-preload.js"),
+        preload: path.join(rendererDir, "dock-preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -101,7 +99,7 @@ export class OverlayDock {
       }
     });
 
-    await this.window.loadFile(path.join(__dirname, "..", "renderer", "dock.html"));
+    await this.window.loadFile(path.join(rendererDir, "dock.html"));
     this.ready = true;
     if (this.queuedView) {
       const queued = this.queuedView;

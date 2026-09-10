@@ -80,7 +80,7 @@ test("paste failures offer copy, key failures offer settings", () => {
 });
 
 test("only the menu takes focus and dismisses on blur", () => {
-  const menu = { kind: "menu", actions: [], expanded: false, note: "" };
+  const menu = { kind: "menu", actions: [], note: "" };
   const listening = { kind: "listening", latched: false, hint: "" };
   const error = { kind: "error", message: "x", recovery: null };
 
@@ -107,7 +107,7 @@ test("only a new recording claims a display for the session", () => {
     { kind: "idle", ready: true },
     { kind: "working", label: "x", startedAt: 0 },
     { kind: "done", label: "x", tone: "ok", canRedo: true },
-    { kind: "menu", actions: [], expanded: false, note: "" },
+    { kind: "menu", actions: [], note: "" },
     { kind: "error", message: "x", recovery: null },
   ]) {
     assert.equal(viewStartsSession(view), false, `${view.kind} must not re-pick the display`);

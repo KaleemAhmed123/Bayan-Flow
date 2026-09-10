@@ -37,8 +37,7 @@ const el = {
   doneLabel: document.getElementById("doneLabel"),
   doneRedo: document.getElementById("doneRedo"),
   menuNote: document.getElementById("menuNote"),
-  menuPrimary: document.getElementById("menuPrimary"),
-  menuSecondary: document.getElementById("menuSecondary"),
+  menuActions: document.getElementById("menuActions"),
   customRow: document.getElementById("customRow"),
   customInput: document.getElementById("customInput"),
   errorMessage: document.getElementById("errorMessage"),
@@ -134,22 +133,8 @@ function renderMenu() {
   el.customRow.hidden = true;
   el.customInput.value = "";
 
-  el.menuPrimary.replaceChildren();
-  el.menuSecondary.replaceChildren();
-
-  for (const action of actions.filter((item) => item.layer === 1)) {
-    el.menuPrimary.append(createActionButton(action));
-  }
-
-  const secondary = actions.filter((item) => item.layer === 2);
-  if (secondary.length > 0) {
-    el.menuPrimary.append(createMoreButton());
-    for (const action of secondary) {
-      el.menuSecondary.append(createActionButton(action));
-    }
-  }
-
-  el.menuSecondary.hidden = !view.expanded || secondary.length === 0;
+  // Every action at once. There is no More button any more: the grid wraps.
+  el.menuActions.replaceChildren(...actions.map(createActionButton));
 }
 
 function renderError() {
@@ -168,7 +153,7 @@ function renderError() {
 function createActionButton(action) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "btn";
+  button.className = "btn btn-compact";
   button.dataset.actionId = action.id;
 
   const label = document.createElement("span");
@@ -184,24 +169,6 @@ function createActionButton(action) {
     }
 
     send("action", { actionId: action.id });
-  });
-
-  return button;
-}
-
-function createMoreButton() {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "btn";
-
-  const label = document.createElement("span");
-  label.textContent = el.menuSecondary.hidden ? "More" : "Less";
-  button.append(label);
-
-  button.addEventListener("click", () => {
-    el.menuSecondary.hidden = !el.menuSecondary.hidden;
-    label.textContent = el.menuSecondary.hidden ? "More" : "Less";
-    reportSize();
   });
 
   return button;

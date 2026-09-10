@@ -1,12 +1,11 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { assetsDir, rendererDir } from "./app-paths.js";
 import { ConfigStore, normalizeConfig } from "./config-store.js";
+import { HistoryStore } from "./history/history-store.js";
 import { BrowserWindow, ipcMain } from "./electron.js";
 import { parseHotkey } from "./hotkey/hotkey-parser.js";
 import { logger } from "./observability/app-logger.js";
 import type { AppConfig } from "./types.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export type SettingsHealth = {
   hasGroqApiKey: boolean;
@@ -17,14 +16,21 @@ export type SettingsHealth = {
   logDir: string;
 };
 
+/**
+ * The one BayanFlow window. It is called SettingsWindow for history, but since
+ * the History and Stats pages landed it hosts four pages behind a sidebar:
+ * Home, History, Stats, and Settings. The dock is still the only other surface.
+ */
 export class SettingsWindow {
   private window: InstanceType<typeof BrowserWindow> | null = null;
 
   constructor(
     private readonly configStore: ConfigStore,
+    private readonly historyStore: HistoryStore,
     private onConfigSaved: (config: AppConfig) => Promise<void>,
     private readonly getHealth: () => SettingsHealth,
     private readonly onTestMicrophone: () => Promise<void>,
+    private readonly listMicrophones: () => Promise<{ deviceId: string; label: string }[]>,
   ) {}
 
   async show(): Promise<void> {
@@ -35,6 +41,10 @@ export class SettingsWindow {
       return;
     }
 
+    ipcMain.handle("settings:list-microphones", (event) => {
+      this.assertSender(event.sender.id);
+      return this.listMicrophones();
+    });
     ipcMain.handle("settings:load", (event) => {
       this.assertSender(event.sender.id);
       return this.configStore.load().then((config) => ({
@@ -62,6 +72,7 @@ export class SettingsWindow {
         inputAssistHotkey: nextConfig.inputAssistHotkey,
         showDock: nextConfig.showDock,
         autoPaste: nextConfig.autoPaste,
+        historyEnabled: nextConfig.historyEnabled,
         cleanupEnabled: nextConfig.cleanupEnabled,
         openAtLogin: nextConfig.openAtLogin,
       });
@@ -77,17 +88,42 @@ export class SettingsWindow {
       return { ok: true };
     });
 
+    // History IPC. Read and delete only: nothing here can write a new entry, so
+    // a compromised renderer cannot forge history or reach any other file.
+    ipcMain.handle("history:list", (event) => {
+      this.assertSender(event.sender.id);
+      return this.historyStore.list();
+    });
+    ipcMain.handle("history:stats", (event) => {
+      this.assertSender(event.sender.id);
+      return this.historyStore.stats();
+    });
+    ipcMain.handle("history:remove", async (event, id: unknown) => {
+      this.assertSender(event.sender.id);
+      if (typeof id !== "string" || !id.trim()) {
+        throw new Error("Invalid history id.");
+      }
+
+      await this.historyStore.remove(id);
+      return { ok: true };
+    });
+    ipcMain.handle("history:clear", async (event) => {
+      this.assertSender(event.sender.id);
+      await this.historyStore.clear();
+      return { ok: true };
+    });
+
     this.window = new BrowserWindow({
       width: 920,
       height: 760,
       minWidth: 820,
       minHeight: 700,
       resizable: true,
-      title: "BayanFlow Settings",
-      icon: path.join(__dirname, "assets", "tray-icon.ico"),
+      title: "BayanFlow",
+      icon: path.join(assetsDir, "tray-icon.ico"),
       backgroundColor: "#0a0b0f",
       webPreferences: {
-        preload: path.join(__dirname, "renderer", "settings-preload.js"),
+        preload: path.join(rendererDir, "settings-preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -98,13 +134,18 @@ export class SettingsWindow {
 
     this.window.on("closed", () => {
       this.window = null;
+      ipcMain.removeHandler("settings:list-microphones");
       ipcMain.removeHandler("settings:load");
       ipcMain.removeHandler("settings:save");
       ipcMain.removeHandler("settings:test-mic");
+      ipcMain.removeHandler("history:list");
+      ipcMain.removeHandler("history:stats");
+      ipcMain.removeHandler("history:remove");
+      ipcMain.removeHandler("history:clear");
       void logger.info("settings.closed");
     });
 
-    await this.window.loadFile(path.join(__dirname, "renderer", "settings.html"));
+    await this.window.loadFile(path.join(rendererDir, "settings.html"));
     void logger.info("settings.show.created");
   }
 

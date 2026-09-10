@@ -29,7 +29,7 @@ window.recorderBridge.onStart(async (_event, options) => {
     recordedBytes = 0;
     limitFailure = null;
     stopReason = "manual";
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await openMicrophone(options?.microphoneId || "");
     mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
     startSilenceMonitor(stream, SILENCE_AUTO_STOP_MS);
 
@@ -202,3 +202,48 @@ function stopSilenceMonitor() {
     audioContext = null;
   }
 }
+
+/**
+ * Opens the chosen microphone, falling back to the system default when it is gone.
+ *
+ * `deviceId: { exact }` fails hard when the device was unplugged. That is the
+ * right constraint — we want the device the user picked — but losing a whole
+ * dictation because a headset was removed is not acceptable, so a missing device
+ * degrades to the default rather than failing.
+ *
+ * The user is told about it in Settings, where the saved device is compared
+ * against the live list. That is the place they would go to fix it, and it needs
+ * no extra channel out of this window. Only a genuinely missing device is
+ * retried: a permission denial must surface as itself, not be masked.
+ */
+async function openMicrophone(microphoneId) {
+  if (!microphoneId) {
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: microphoneId } } });
+  } catch (error) {
+    const isMissingDevice = error?.name === "NotFoundError" || error?.name === "OverconstrainedError";
+    if (!isMissingDevice) {
+      throw error;
+    }
+
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+}
+
+window.recorderBridge.onListDevices(async () => {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    await window.recorderBridge.devicesListed({
+      devices: devices
+        .filter((device) => device.kind === "audioinput" && device.deviceId)
+        .map((device) => ({ deviceId: device.deviceId, label: device.label || "Microphone" })),
+    });
+  } catch {
+    // An empty list degrades Settings to "system default", which is the
+    // behaviour that existed before a picker was offered.
+    await window.recorderBridge.devicesListed({ devices: [] });
+  }
+});
