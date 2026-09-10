@@ -213,6 +213,21 @@
                     Opens the rewrite menu for the text in your focused input. Default: Ctrl+Shift+Enter.
                   </span>
                 </label>
+
+                <label class="toggle">
+                  <input id="suppressHotkeyInOtherApps" type="checkbox" />
+                  <span class="toggle-copy">
+                    <span class="toggle-title">Keep the hotkey out of other apps</span>
+                    <span class="toggle-help">
+                      Off by default. Normally your hotkey reaches BayanFlow <em>and</em> whatever app is focused,
+                      so an editor with the same shortcut also acts on it. This asks Windows to reserve the
+                      combination for BayanFlow alone. Escape is never reserved, because that would break it
+                      everywhere. If another app already owns your hotkey, Windows refuses and the note below
+                      says so. If dictation stops responding after turning this on, turn it back off.
+                    </span>
+                    <span class="toggle-help" id="suppressHotkeyNote"></span>
+                  </span>
+                </label>
               </section>
 
               <section class="card">

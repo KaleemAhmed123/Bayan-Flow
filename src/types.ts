@@ -17,6 +17,8 @@ export type AppConfig = {
   groqApiKey: string;
   hotkey: string;
   inputAssistHotkey: string;
+  /** Ask the OS to swallow our hotkeys so they do not also reach the focused app. */
+  suppressHotkeyInOtherApps: boolean;
   showDock: boolean;
   autoPaste: boolean;
   historyEnabled: boolean;

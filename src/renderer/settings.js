@@ -29,6 +29,7 @@ const fields = {
   debugCaptureEnabled: document.getElementById("debugCaptureEnabled"),
   showDock: document.getElementById("showDock"),
   autoPaste: document.getElementById("autoPaste"),
+  suppressHotkeyInOtherApps: document.getElementById("suppressHotkeyInOtherApps"),
   cleanupEnabled: document.getElementById("cleanupEnabled"),
   historyEnabled: document.getElementById("historyEnabled"),
   openAtLogin: document.getElementById("openAtLogin"),
@@ -115,6 +116,7 @@ window.settingsBridge.load().then((config) => {
   syncScreenshotToggle();
   fields.showDock.checked = config.showDock;
   fields.autoPaste.checked = config.autoPaste;
+  fields.suppressHotkeyInOtherApps.checked = config.suppressHotkeyInOtherApps;
   fields.cleanupEnabled.checked = config.cleanupEnabled;
   fields.historyEnabled.checked = config.historyEnabled;
   fields.openAtLogin.checked = config.openAtLogin;
@@ -159,6 +161,7 @@ document.getElementById("save").addEventListener("click", async () => {
       debugCaptureEnabled: fields.debugCaptureEnabled.checked,
       showDock: fields.showDock.checked,
       autoPaste: fields.autoPaste.checked,
+      suppressHotkeyInOtherApps: fields.suppressHotkeyInOtherApps.checked,
       cleanupEnabled: fields.cleanupEnabled.checked,
       historyEnabled: fields.historyEnabled.checked,
       openAtLogin: fields.openAtLogin.checked,
@@ -615,6 +618,24 @@ function renderHealth(config, localHealth) {
     ["Last error", localHealth.lastErrorId || "None", localHealth.lastErrorId ? "error" : "good"],
     ["Logs", localHealth.logDir || "Not initialized", "neutral"],
   ];
+
+  const notSuppressed = localHealth.hotkeysNotSuppressed || [];
+  if (config.suppressHotkeyInOtherApps) {
+    rows.splice(2, 0, [
+      "Hotkey reserved",
+      notSuppressed.length ? `Refused for ${notSuppressed.join(", ")}` : "Yes, other apps cannot see it",
+      notSuppressed.length ? "warning" : "good",
+    ]);
+  }
+
+  const note = document.getElementById("suppressHotkeyNote");
+  if (note) {
+    note.textContent = !config.suppressHotkeyInOtherApps
+      ? ""
+      : notSuppressed.length
+        ? `Windows refused ${notSuppressed.join(", ")} — another app already owns it. Pick a different combination.`
+        : "Reserved. Other apps no longer see this shortcut.";
+  }
 
   health.replaceChildren();
   for (const [label, value, state] of rows) {

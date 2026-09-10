@@ -12,6 +12,7 @@ export const {
   crashReporter,
   desktopCapturer,
   dialog,
+  globalShortcut,
   ipcMain,
   Menu,
   net,

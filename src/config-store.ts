@@ -11,6 +11,9 @@ const DEFAULT_CONFIG: AppConfig = {
   groqApiKey: "",
   hotkey: "Ctrl+Shift+Space",
   inputAssistHotkey: "Ctrl+Shift+Enter",
+  // Off until measured: it relies on uiohook still seeing a key the OS is
+  // suppressing, which is reasoned rather than proven.
+  suppressHotkeyInOtherApps: false,
   showDock: true,
   autoPaste: true,
   historyEnabled: true,
@@ -123,6 +126,7 @@ export class ConfigStore {
       apiKeyStorage: encryptedApiKey ? "encrypted" : config.groqApiKey ? "plaintext_fallback" : "empty",
       hotkey: config.hotkey,
       inputAssistHotkey: config.inputAssistHotkey,
+      suppressHotkeyInOtherApps: config.suppressHotkeyInOtherApps,
       showDock: config.showDock,
       autoPaste: config.autoPaste,
       historyEnabled: config.historyEnabled,
@@ -194,6 +198,7 @@ export function normalizeConfig(input: Partial<AppConfig>): AppConfig {
     groqApiKey: stringOr(input.groqApiKey, process.env.GROQ_API_KEY || ""),
     hotkey: hotkeyOr(input.hotkey, DEFAULT_CONFIG.hotkey),
     inputAssistHotkey: hotkeyOr(input.inputAssistHotkey, DEFAULT_CONFIG.inputAssistHotkey),
+    suppressHotkeyInOtherApps: booleanOr(input.suppressHotkeyInOtherApps, DEFAULT_CONFIG.suppressHotkeyInOtherApps),
     showDock: booleanOr(input.showDock, DEFAULT_CONFIG.showDock),
     autoPaste: booleanOr(input.autoPaste, DEFAULT_CONFIG.autoPaste),
     historyEnabled: booleanOr(input.historyEnabled, DEFAULT_CONFIG.historyEnabled),

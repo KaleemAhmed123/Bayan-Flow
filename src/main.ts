@@ -19,6 +19,7 @@ import { runDictationPipelineWithProviders } from "./dictation/dictation-pipelin
 import { app, clipboard, crashReporter, dialog, Menu, nativeImage, shell, Tray } from "./electron.js";
 import { HistoryStore } from "./history/history-store.js";
 import { HotkeyListener } from "./hotkey/hotkey-listener.js";
+import { HotkeySuppressor, type SuppressionResult } from "./hotkey/hotkey-suppressor.js";
 import { classifyPress } from "./hotkey/hotkey-parser.js";
 import { TextInserter, isUsableTarget, replaceLastOccurrence } from "./insertion/text-inserter.js";
 import { configureLogger, logger } from "./observability/app-logger.js";
@@ -65,6 +66,8 @@ let config: AppConfig;
 let hotkeyListener: HotkeyListener | null = null;
 let rewriteHotkeyListener: HotkeyListener | null = null;
 let cancelHotkeyListener: HotkeyListener | null = null;
+/** Outcome of the last suppression attempt, so Settings can report a refusal. */
+let lastSuppression: SuppressionResult | null = null;
 let isRecording = false;
 let isProcessing = false;
 let isLatched = false;
@@ -143,6 +146,7 @@ let providerCache: {
 } | null = null;
 
 const recorder = new AudioRecorder();
+const hotkeySuppressor = new HotkeySuppressor();
 const inserter = new TextInserter();
 // Both hotkeys can be the one still under the user's fingers when we paste, so
 // either holding its modifiers is enough to make a synthetic shortcut wait.
@@ -278,6 +282,9 @@ app.whenReady()
         lastErrorId,
         lastMicError,
         pasteMode: config.autoPaste ? "auto" : "copy",
+        // Windows refuses a combination another app already owns, so the user
+        // needs to be told which of theirs did not take.
+        hotkeysNotSuppressed: lastSuppression?.rejected ?? [],
         logDir,
       }),
       async () => {
@@ -318,6 +325,9 @@ app.on("will-quit", () => {
   hotkeyListener?.stop();
   rewriteHotkeyListener?.stop();
   cancelHotkeyListener?.stop();
+  // Electron releases these on exit anyway, but doing it explicitly keeps the
+  // "who is holding this key" answer inside one class.
+  hotkeySuppressor.release();
   clearRecordingLimitTimer();
   clearDockSnooze();
   recorder.destroy();
@@ -640,6 +650,15 @@ function restartHotkeyListeners(): void {
       }
     },
   });
+
+  // Esc is never passed in: a bare key registered with the OS would be
+  // swallowed in every application, and the suppressor refuses it anyway.
+  if (config.suppressHotkeyInOtherApps) {
+    lastSuppression = hotkeySuppressor.apply([config.hotkey, config.inputAssistHotkey]);
+  } else {
+    hotkeySuppressor.release();
+    lastSuppression = null;
+  }
 
   try {
     hotkeyListener.start();

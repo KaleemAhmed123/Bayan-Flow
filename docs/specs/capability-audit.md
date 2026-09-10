@@ -969,7 +969,7 @@ not damage them.
 ### Tier 3 — later
 
 - [x] 22. Hotkey layer as a pure reducer (F4)
-- [ ] 23. Low-level keyboard hook that can consume the keystroke (B5)
+- [x] 23. Stop the hotkey leaking to the focused app (B5) — via globalShortcut, not a native hook
 - [ ] 24. UI Automation read path with clipboard fallback (C7)
 - [ ] 25. Configurable OpenAI-compatible base URLs (G4)
 - [ ] 26. Per-stage timeout overrides (B6)
@@ -1618,6 +1618,60 @@ Suite: **241 tests, all passing.** `npm run local:smoke` passes.
 **The 800ms threshold is kept.** It is still the better number once the microphone is open, because a
 half-second hold captures almost nothing worth sending. It is simply no longer load-bearing for this
 failure.
+
+### 2026-09-10 — Task 23: suppressing the hotkey without writing a native hook
+
+**The audit specified a low-level Windows keyboard hook. We did not write one, and should not have.**
+
+Confirmed first: `uiohook-napi` 1.5.5 exposes `start`, `stop`, `keyTap`, `keyToggle` and event
+subscription, and nothing that can suppress an event. The audit was right that there is no small fix
+inside uiohook.
+
+But Windows already suppresses a key for a registered owner, and Electron already exposes that
+through `globalShortcut`, which maps to `RegisterHotKey`. So the two libraries are used together,
+each for the half it can do: **`globalShortcut` purely to swallow the key, uiohook to decide what the
+press meant.** The callback passed to `register` is deliberately empty — every press-versus-hold
+decision already lives in the reducer, and putting behaviour there would start two recordings for
+one press.
+
+Weighed against the native route:
+
+| | globalShortcut | WH_KEYBOARD_LL addon |
+| --- | --- | --- |
+| New dependencies | none | node-gyp, prebuilds per arch |
+| Risk of wedging the keyboard | none — worst case registration fails | real: a slow hook callback freezes system input |
+| Size | one class, ~120 lines | a native module plus a build pipeline |
+
+**The unproven assumption, stated plainly:** this relies on uiohook still observing a key that the OS
+is suppressing. Win32 calls low-level hooks before it processes hotkeys, so it should, but that is
+reasoning and this file has a long record of reasoning losing to measurement. **The setting is
+therefore off by default** — one toggle away from today's behaviour, and it cannot break dictation
+while it is being tested.
+
+**The guard that matters most: a combination with no modifier is never registered.** The cancel
+binding is a bare `Esc`, and reserving that with the OS would swallow Escape in every application on
+the machine — no dialog dismissed, no menu closed. Requiring at least one modifier is a broader rule
+than naming Esc and it cannot be defeated by a user typing a single key into the hotkey field.
+`main.ts` also never passes Esc in, so the mistake would have to get past two independent guards.
+
+Registration failure is treated as ordinary, not exceptional: Windows refuses a combination another
+app already owns, and the result carries `rejected` so Settings can name it rather than leaving the
+user wondering why nothing changed. Rebinding releases the previous accelerator first, so a hotkey
+the user has moved away from does not stay swallowed.
+
+**An honest correction to the Task 22 entry.** That entry wired a `consume` field into the reducer
+because the audit predicted a per-event hook would fill it. On this approach it is not needed —
+suppression is decided once at registration, not per keystroke — so `consume` remains hardcoded
+`false` and is, for now, speculative. It was left in place rather than removed only because the
+native route is still the fallback if the hybrid turns out not to work; if the hybrid holds, the
+field should be deleted.
+
+Suite: **252 tests, all passing** (11 new, covering the bare-key refusal, Esc surviving a direct
+call, rejection reporting, rebinding, and an unregister that throws during shutdown).
+`npm run local:smoke` passes.
+
+**Unverified until run:** whether the OS actually stops the key reaching the focused app, and whether
+uiohook still sees it. Both are one manual test.
 
 ## 7. Explanation
 
