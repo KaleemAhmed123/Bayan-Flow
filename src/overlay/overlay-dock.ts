@@ -265,7 +265,16 @@ export class OverlayDock {
 
       void logger.info("dock.resize", { width: next.width, height: next.height, view: this.view.kind });
       this.lastSize = next;
-      this.applyBounds(true);
+      // The idle pill expands and collapses on every hover, and the tween turns
+      // each one into roughly a dozen setBounds calls on an always-on-top
+      // window — about twenty-two for a hover in and out. That churn disturbs
+      // the focus of the app the user is typing into, which is the one thing
+      // this window must never do. The pill's own contents still animate in
+      // CSS, so only the frame snaps.
+      //
+      // Every other view animates as before: those resizes happen once, at a
+      // moment the user is already looking at the dock.
+      this.applyBounds(this.view.kind !== "idle");
     });
 
     ipcMain.handle("dock:command", async (event, name: unknown, payload: unknown) => {
