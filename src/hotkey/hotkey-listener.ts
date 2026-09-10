@@ -1,6 +1,14 @@
 import { UiohookKey, uIOhook, type UiohookKeyboardEvent } from "uiohook-napi";
 import { logger } from "../observability/app-logger.js";
-import { matchesGlobalKey, toUiohookHotkey } from "./hotkey-parser.js";
+import { toUiohookHotkey } from "./hotkey-parser.js";
+import {
+  areModifiersDown,
+  initialHotkeyState,
+  reduceHotkey,
+  type HotkeyEffect,
+  type HotkeyInput,
+  type HotkeyState,
+} from "./hotkey-reducer.js";
 
 type HotkeyCallbacks = {
   onPressed: () => void;
@@ -21,18 +29,15 @@ const KEY_NAMES = new Map<number, string>(
     .map(([key, value]) => [value as number, key.toUpperCase()]),
 );
 
+/**
+ * The I/O shell around `hotkey-reducer`. It owns the hook, the keycode-to-name
+ * mapping and the clock, and nothing else: every decision about what a key
+ * event means is made by the reducer, which is pure and tested on its own.
+ */
 export class HotkeyListener {
   private readonly hotkey: ReturnType<typeof toUiohookHotkey>;
-  private isPressed = false;
   private isStarted = false;
-  private pressedAt = 0;
-  /**
-   * Key names currently held down, by uiohook name. Tracked from raw key events
-   * rather than from the `ctrlKey`/`shiftKey` flags, because on the key-up of a
-   * modifier those flags are ambiguous about whether they describe the state
-   * before or after the event.
-   */
-  private readonly downKeys = new Set<string>();
+  private state: HotkeyState = initialHotkeyState;
 
   constructor(
     hotkey: string,
@@ -56,10 +61,7 @@ export class HotkeyListener {
   stop(): void {
     this.hook.off("keydown", this.handleKeyDown);
     this.hook.off("keyup", this.handleKeyUp);
-    // Once detached we stop seeing key-ups, so anything still recorded as down
-    // would be stale forever and permanently stall the modifier guard.
-    this.downKeys.clear();
-    this.isPressed = false;
+    this.dispatch({ type: "detach" });
 
     if (this.isStarted) {
       this.hook.stop();
@@ -76,60 +78,41 @@ export class HotkeyListener {
    * is "paste as plain text" in some apps and an unrelated command in others.
    */
   areHotkeyModifiersDown(): boolean {
-    return this.hotkey.modifiers.some((modifier) =>
-      [...this.downKeys].some((downKey) => matchesGlobalKey(downKey, modifier)),
-    );
+    return areModifiersDown(this.state, this.hotkey);
   }
 
   private readonly handleKeyDown = (event: UiohookKeyboardEvent): void => {
-    const eventName = getEventKeyName(event);
-    if (eventName) {
-      this.downKeys.add(eventName);
-    }
-
-    if (!this.isPressed && matchesGlobalKey(eventName, this.hotkey.key) && this.areModifiersDown(event)) {
-      this.isPressed = true;
-      this.pressedAt = Date.now();
-      this.callbacks.onPressed();
-    }
+    this.dispatch({
+      type: "keydown",
+      keyName: getEventKeyName(event),
+      atMs: Date.now(),
+      ctrlKey: event.ctrlKey,
+      shiftKey: event.shiftKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey,
+    });
   };
 
   private readonly handleKeyUp = (event: UiohookKeyboardEvent): void => {
-    const eventName = getEventKeyName(event);
-    this.downKeys.delete(eventName);
-
-    if (this.isPressed && this.isComboKey(eventName)) {
-      const heldMs = this.pressedAt ? Date.now() - this.pressedAt : 0;
-      this.isPressed = false;
-      this.pressedAt = 0;
-      this.callbacks.onReleased?.(heldMs);
-    }
+    this.dispatch({ type: "keyup", keyName: getEventKeyName(event), atMs: Date.now() });
   };
 
-  private areModifiersDown(event: UiohookKeyboardEvent): boolean {
-    return this.hotkey.modifiers.every((modifier) => {
-      if (modifier === "CTRL" || modifier === "COMMANDORCONTROL") {
-        return event.ctrlKey;
-      }
+  private dispatch(input: HotkeyInput): void {
+    const step = reduceHotkey(this.state, input, this.hotkey);
+    this.state = step.state;
 
-      if (modifier === "SHIFT") {
-        return event.shiftKey;
-      }
-
-      if (modifier === "ALT") {
-        return event.altKey;
-      }
-
-      if (modifier === "COMMAND") {
-        return event.metaKey;
-      }
-
-      return false;
-    });
+    for (const effect of step.effects) {
+      this.emit(effect);
+    }
   }
 
-  private isComboKey(eventName: string): boolean {
-    return matchesGlobalKey(eventName, this.hotkey.key) || this.hotkey.modifiers.some((modifier) => matchesGlobalKey(eventName, modifier));
+  private emit(effect: HotkeyEffect): void {
+    if (effect.type === "pressed") {
+      this.callbacks.onPressed();
+      return;
+    }
+
+    this.callbacks.onReleased?.(effect.heldMs);
   }
 }
 

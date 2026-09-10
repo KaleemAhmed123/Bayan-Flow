@@ -968,7 +968,7 @@ not damage them.
 
 ### Tier 3 — later
 
-- [ ] 22. Hotkey layer as a pure reducer (F4)
+- [x] 22. Hotkey layer as a pure reducer (F4)
 - [ ] 23. Low-level keyboard hook that can consume the keystroke (B5)
 - [ ] 24. UI Automation read path with clipboard fallback (C7)
 - [ ] 25. Configurable OpenAI-compatible base URLs (G4)
@@ -1473,6 +1473,62 @@ Suite: **228 tests, all passing.** `npm run local:smoke` passes, 3 non-blank doc
 **Not done:** making the hold threshold configurable. One constant backed by measurements beats a
 setting nobody knows how to tune. If a second user's presses land differently, that is the moment to
 add one, and task 29 is already the place for it.
+
+### 2026-09-10 — Task 22: the hotkey layer is a reducer, and the microphone is warm
+
+Two changes, both following from the recorder work above.
+
+**Microphone pre-warm.** The stop-waits-for-start fix stopped the corruption but not the emptiness:
+the first dictation after every launch still came back with nothing, because the first
+`getUserMedia` took 1,646ms against 18-23ms for every later one. The recorder window now opens a
+stream at startup and stops its tracks immediately, so the device is initialised without being held
+and no in-use indicator stays lit. Fire and forget in both directions — startup never waits on it,
+and a failure is swallowed, because a warm-up must never become a new way to fail. A genuine
+microphone problem is still reported by the next real recording, which is where the user can act on
+it. The device warmed is the one the user picked, so a non-default microphone benefits too.
+
+Alongside it, an empty recording no longer blames the user. Because `stop()` now waits for the
+start, **the time the stop takes is itself the diagnostic**: above 250ms an empty result means the
+device was not ready. That case reads "Microphone was still starting - press again, it is ready
+now", which is true and actionable, since the device is warm by the time it is read.
+`recorderStopMs` and `micWasStillOpening` are logged on `dictation.no_speech` so the two causes stay
+tellable apart.
+
+**Task 22 — the hotkey layer as a pure reducer.** `src/hotkey/hotkey-reducer.ts` is
+`(state, input, config) -> { state, effects, consume }` with no clock, no logging and no hook.
+`HotkeyListener` keeps its exact public API and becomes a shell that owns the hook, the
+keycode-to-name map and `Date.now()`, and nothing else.
+
+Decisions:
+
+- **`pressedAt: number | null` replaces the `isPressed` + `pressedAt` pair.** Two fields that must
+  agree can disagree; one cannot.
+- **Time arrives on the event as `atMs`.** This is what makes a 900ms hold testable in microseconds,
+  and the tap-versus-hold case now is exactly that test.
+- **`downKeys` is an array, not a `Set`,** so the whole state compares with `deepEqual` and logs
+  as-is for task 30's debug panel. Marked `ponytail:` — linear scans over a handful of held keys.
+- **`consume` is in the shape and hardcoded `false`.** uiohook can observe keys but cannot swallow
+  them. Task 23 swaps in a low-level Windows hook that can, and this is the field it fills, so that
+  change stays inside the reducer where it is testable without a keyboard. The field is wired; the
+  policy is not invented.
+
+**Deliberately unchanged: the two sources of truth for "is a modifier down".** A key-down checks the
+event's own `ctrlKey`/`shiftKey` flags while `areHotkeyModifiersDown()` reads the tracked set. They
+disagree on purpose — on a modifier's key-up the flags are ambiguous about whether they describe
+before or after, and the flags also cover a modifier held before the hook attached. Unifying them
+might be an improvement, but it is a behaviour change, and a refactor that changes behaviour is not
+a refactor. Recorded here as an open question rather than smuggled in.
+
+**How the refactor was verified.** `tests/hotkey-listener.test.mjs` was left byte-for-byte
+unchanged. Those five tests drive the real `HotkeyListener` through a fake hook, so their passing is
+evidence no behaviour moved. Rewriting them alongside the code would have proved nothing.
+`tests/hotkey-reducer.test.mjs` adds thirteen cases for what could not be reached before: key
+repeat, release by modifier rather than main key, an unrelated key-up mid-press, a key-up with no
+press behind it, an unmapped keycode, right-hand modifiers, and detach clearing stale state.
+
+`main.ts` was not touched. `git diff` against it is empty.
+
+Suite: **241 tests, all passing.** `npm run local:smoke` passes.
 
 ## 7. Explanation
 
