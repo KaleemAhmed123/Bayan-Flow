@@ -199,3 +199,87 @@ test("rewrite passes vocabulary through to the prompt", async () => {
   await provider.rewrite("hi aisha", { actionId: "polish", vocabulary: ["Ayesha"] });
   assert.match(prompt, /Ayesha/);
 });
+
+/* ------------------------------------------------------------------ *
+ * "Request too large": a sizing error, not a quota
+ * ------------------------------------------------------------------ */
+
+/** The shape Groq returns when max_completion_tokens exceeds the OTPM ceiling. */
+function requestTooLargeError(limit = 1000, requested = 1079) {
+  return Object.assign(
+    new Error(
+      `429 {"error":{"message":"Request too large for model \`m\` in organization \`org_x\` service tier ` +
+        `\`on_demand\` on output tokens per minute (OTPM): Limit ${limit}, Requested ${requested}. ` +
+        `The request's expected output tokens exceed the enforced limit; reduce max_tokens ` +
+        `(or the request's expected output) and try again.","code":"rate_limit_exceeded"}}`,
+    ),
+    { status: 429, headers: {} },
+  );
+}
+
+test("a too-large request is retried against the same model with a smaller ceiling", async () => {
+  // The five-minute dictation case. Before this, the oversized ceiling was sent
+  // to the primary, then verbatim to the fallback, and both were rejected.
+  const provider = new GroqCleanupProvider("gsk_test", "primary", "fallback", createCooldown());
+  const declared = [];
+  provider.client = {
+    chat: {
+      completions: {
+        create: async (request) => {
+          declared.push(request.max_completion_tokens);
+          if (declared.length === 1) {
+            throw requestTooLargeError(1000, 1079);
+          }
+
+          return ok("polished long transcript");
+        },
+      },
+    },
+  };
+
+  const longTranscript = "word ".repeat(900);
+  const result = await provider.clean(longTranscript, { mode: "default" });
+
+  assert.equal(result, "polished long transcript");
+  assert.equal(declared.length, 2, "exactly one retry, not a loop");
+  assert.ok(declared[1] < declared[0], "the retry must ask for less");
+  assert.ok(declared[1] <= 1000, `the retry must fit under the stated limit, asked for ${declared[1]}`);
+});
+
+test("a too-large request does not put the model into cooldown", async () => {
+  // The cascade this prevents: one long dictation used to cool down BOTH models,
+  // so the next short dictation failed instantly with "everything is rate limited".
+  const cooldown = createCooldown();
+  const provider = new GroqCleanupProvider("gsk_test", "primary", "fallback", cooldown);
+  provider.client = {
+    chat: {
+      completions: {
+        create: async (request) =>
+          request.max_completion_tokens > 1000 ? Promise.reject(requestTooLargeError()) : ok("fine"),
+      },
+    },
+  };
+
+  await provider.clean("word ".repeat(900), { mode: "default" });
+
+  assert.equal(cooldown.isInCooldown("primary"), false, "a sizing error is not a quota");
+  assert.equal(cooldown.isInCooldown("fallback"), false);
+});
+
+test("a genuine quota rate limit still cools the model down", async () => {
+  // The distinction has to cut both ways, or the cooldown store stops working.
+  const cooldown = createCooldown();
+  const provider = new GroqCleanupProvider("gsk_test", "primary", "fallback", cooldown);
+  stubClient(provider, (_request, attempt) => {
+    if (attempt === 1) {
+      throw rateLimitError();
+    }
+
+    return ok("from the fallback");
+  });
+
+  const result = await provider.clean("short text", { mode: "default" });
+
+  assert.equal(result, "from the fallback");
+  assert.equal(cooldown.isInCooldown("primary"), true, "a real quota must still cool the model down");
+});
