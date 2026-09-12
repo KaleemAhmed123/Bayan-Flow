@@ -10,6 +10,7 @@
 import { logger } from "../observability/logger.js";
 import { isRateLimitError, normalizeError } from "../observability/errors.js";
 import { headersFromError } from "./rate-limit-headers.js";
+import { isRequestTooLargeError } from "./model-limits.js";
 import type { ModelCooldownManager } from "./model-cooldown.js";
 
 /**
@@ -88,7 +89,11 @@ export async function withModelFallback<T>(options: {
     } catch (error) {
       lastError = error;
 
-      if (isRateLimitError(error)) {
+      // A "Request too large" is a 429, but it is not a quota: nothing has been
+      // used up, the request was simply bigger than one call may declare. Putting
+      // the model in cooldown for it meant a single long dictation blocked every
+      // dictation after it, including short ones that would have worked.
+      if (isRateLimitError(error) && !isRequestTooLargeError(error)) {
         options.cooldown?.noteRateLimit(model, headersFromError(error));
       }
 
