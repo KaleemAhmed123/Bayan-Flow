@@ -1,5 +1,6 @@
 import Groq from "groq-sdk";
-import { logger } from "../observability/app-logger.js";
+import { createPrefixedId } from "../ids.js";
+import { logger } from "../observability/logger.js";
 import { normalizeError, retryTransient } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 import {
@@ -72,7 +73,7 @@ export class GroqRewriteProvider {
       options.attempt ?? 1,
       options.vocabulary,
     );
-    const requestId = context.requestId || createRequestId("rewrite");
+    const requestId = context.requestId || createPrefixedId("rewrite");
     const maxOutputTokens = estimateRewriteOutputTokens(trimmed, options.actionId, model);
     const startedAt = Date.now();
 
@@ -174,6 +175,3 @@ function estimateRewriteOutputTokens(input: string, actionId: RewriteActionId, m
   return estimateOutputTokens(input.length, model, actionId === "custom" ? 1_024 : 256);
 }
 
-function createRequestId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}

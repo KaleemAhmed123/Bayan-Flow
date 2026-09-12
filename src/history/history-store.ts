@@ -24,7 +24,8 @@
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { app } from "../electron.js";
-import { logger } from "../observability/app-logger.js";
+import { createPrefixedId } from "../ids.js";
+import { logger } from "../observability/logger.js";
 import { normalizeError } from "../observability/errors.js";
 
 /** Newest rows kept on disk. Old ones are dropped on the next append. */
@@ -111,7 +112,7 @@ export class HistoryStore {
     }
 
     const stored: HistoryEntry = {
-      id: `h_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      id: createPrefixedId("h", "_"),
       at: Date.now(),
       seconds: Math.max(0, Math.round(Number(entry.seconds) || 0)),
       words: countWords(polished),

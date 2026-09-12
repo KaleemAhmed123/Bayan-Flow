@@ -1,5 +1,6 @@
 import Groq from "groq-sdk";
 import { headersFromError, parseRateLimitDuration, readHeader } from "../llm/rate-limit-headers.js";
+import { createPrefixedId } from "../ids.js";
 
 export type ErrorCategory =
   | "startup"
@@ -84,7 +85,7 @@ export function normalizeError(category: ErrorCategory, error: unknown): Normali
   const code = getString(source, "code");
 
   return {
-    id: createErrorId(category),
+    id: createPrefixedId(category),
     category,
     userMessage: getUserMessage(category, error),
     message: sanitizeErrorMessage(source.message),
@@ -249,9 +250,6 @@ export async function retryTransient<T>(
   throw new Error("Retry failed unexpectedly.");
 }
 
-function createErrorId(category: ErrorCategory): string {
-  return `${category}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function sanitizeErrorMessage(message: string): string {
   return message.replace(/gsk_[a-z0-9_-]+|sk-[a-z0-9_-]+|bearer\s+[a-z0-9._-]+/gi, "[redacted]");

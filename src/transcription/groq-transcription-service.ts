@@ -1,7 +1,8 @@
 import Groq from "groq-sdk";
+import { createPrefixedId } from "../ids.js";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { logger } from "../observability/app-logger.js";
+import { logger } from "../observability/logger.js";
 import { normalizeError, retryTransient } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 import { buildTranscriptionPrompt } from "./transcription-prompt.js";
@@ -120,7 +121,7 @@ export class GroqTranscriptionService {
     options: { language: string; prompt: string; retry: boolean; vocabulary: string[] },
   ): Promise<GroqTranscriptionResult> {
     const startedAt = Date.now();
-    const requestId = context.requestId || createRequestId("transcription");
+    const requestId = context.requestId || createPrefixedId("transcription");
     const audioBytes = (await stat(audioPath)).size;
 
     void logger.info("groq.transcription.start", {
@@ -345,6 +346,3 @@ function shouldRetryTranscription(result: GroqTranscriptionResult): boolean {
     : false;
 }
 
-function createRequestId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}

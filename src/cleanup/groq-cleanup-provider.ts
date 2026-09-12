@@ -1,5 +1,6 @@
 import Groq from "groq-sdk";
-import { logger } from "../observability/app-logger.js";
+import { createPrefixedId } from "../ids.js";
+import { logger } from "../observability/logger.js";
 import { normalizeError, retryTransient } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 import {
@@ -57,7 +58,7 @@ export class GroqCleanupProvider implements CleanupProvider {
     isFallback: boolean,
   ): Promise<string> {
     const startedAt = Date.now();
-    const requestId = context.requestId || createRequestId("cleanup");
+    const requestId = context.requestId || createPrefixedId("cleanup");
     const prompt = buildCleanupPrompt(trimmed, options);
     const maxOutputTokens = estimateCleanupOutputTokens(trimmed, model);
 
@@ -155,6 +156,3 @@ function estimateCleanupOutputTokens(input: string, model: string): number {
   return estimateOutputTokens(input.length, model, 128);
 }
 
-function createRequestId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
