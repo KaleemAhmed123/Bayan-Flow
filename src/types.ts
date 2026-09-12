@@ -88,6 +88,28 @@ export type AppConfig = {
    * complaint and is never on by accident.
    */
   debugCaptureEnabled: boolean;
+  /**
+   * Onboarding steps the user has genuinely completed.
+   *
+   * These exist because the Home checklist used to infer "done" from the absence
+   * of failure — `!lastMicError` is true on a fresh install where no test has
+   * ever run, and `inputAssistHotkey` always has a default — so a brand new user
+   * saw three of four steps already ticked. A checklist is a promise; it has to
+   * record what actually happened, not what has not gone wrong yet.
+   */
+  /**
+   * Seconds of silence that end a recording on their own.
+   *
+   * A setting rather than a constant because the right value depends on the
+   * person, not the code: five seconds is fine for a chat reply and far too
+   * short for composing an email, where pausing to think is the normal case.
+   * Latched recordings feel this most — the whole point of latching is that the
+   * user's finger is not the timer.
+   */
+  silenceStopSeconds: number;
+  didTestMicrophone: boolean;
+  didDictate: boolean;
+  didRewrite: boolean;
 };
 
 export type DictationResult = {

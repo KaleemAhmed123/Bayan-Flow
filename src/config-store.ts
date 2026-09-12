@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { app, safeStorage } from "./electron.js";
 import { parseHotkey } from "./hotkey/hotkey-parser.js";
-import { logger } from "./observability/app-logger.js";
+import { logger } from "./observability/logger.js";
 import { normalizeError } from "./observability/errors.js";
 import { DEFAULT_CONTEXT_BLOCKLIST, parseBlocklist, serializeBlocklist } from "./context/context-rules.js";
 import { isDefaultEndpoint } from "./llm/client-options.js";
@@ -45,6 +45,10 @@ const DEFAULT_CONFIG: AppConfig = {
   preserveExactWording: false,
   instructionGuardEnabled: true,
   debugCaptureEnabled: false,
+  silenceStopSeconds: 5,
+  didTestMicrophone: false,
+  didDictate: false,
+  didRewrite: false,
 };
 
 /**
@@ -92,6 +96,17 @@ export type SecureStorage = {
   encryptString(value: string): Buffer;
   decryptString(value: Buffer): string;
 };
+
+/**
+ * Whether this machine can encrypt the stored key.
+ *
+ * On Windows safeStorage is DPAPI-backed and effectively always available, so
+ * the false branch is a corner — but it was a silent one: the key was written to
+ * config.json in plain text and the only trace was a log field nobody reads.
+ */
+export function isKeyEncryptionAvailable(secureStorage: SecureStorage | undefined = safeStorage): boolean {
+  return Boolean(secureStorage?.isEncryptionAvailable?.());
+}
 
 export class ConfigStore {
   private readonly filePath: string;
@@ -156,6 +171,7 @@ export class ConfigStore {
       preserveExactWording: config.preserveExactWording,
       instructionGuardEnabled: config.instructionGuardEnabled,
       debugCaptureEnabled: config.debugCaptureEnabled,
+      silenceStopSeconds: config.silenceStopSeconds,
     });
   }
 }
@@ -246,6 +262,10 @@ export function normalizeConfig(input: Partial<AppConfig>): AppConfig {
     preserveExactWording: booleanOr(input.preserveExactWording, DEFAULT_CONFIG.preserveExactWording),
     instructionGuardEnabled: booleanOr(input.instructionGuardEnabled, DEFAULT_CONFIG.instructionGuardEnabled),
     debugCaptureEnabled: booleanOr(input.debugCaptureEnabled, DEFAULT_CONFIG.debugCaptureEnabled),
+    silenceStopSeconds: silenceSecondsOr(input.silenceStopSeconds, DEFAULT_CONFIG.silenceStopSeconds),
+    didTestMicrophone: booleanOr(input.didTestMicrophone, DEFAULT_CONFIG.didTestMicrophone),
+    didDictate: booleanOr(input.didDictate, DEFAULT_CONFIG.didDictate),
+    didRewrite: booleanOr(input.didRewrite, DEFAULT_CONFIG.didRewrite),
   };
 }
 
@@ -317,6 +337,24 @@ function hotkeyOr(value: unknown, fallback: string): string {
 /** Non-negative whole milliseconds. Anything else means "use the default". */
 function timeoutOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
+}
+
+/**
+ * Silence timeout in whole seconds.
+ *
+ * Floored at 2s because anything shorter clips the natural gap between
+ * sentences, and capped at 30s so a mistyped 300 cannot leave the microphone
+ * open for five minutes after the user has walked away.
+ */
+export const MIN_SILENCE_STOP_SECONDS = 2;
+export const MAX_SILENCE_STOP_SECONDS = 30;
+
+function silenceSecondsOr(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+
+  return Math.min(MAX_SILENCE_STOP_SECONDS, Math.max(MIN_SILENCE_STOP_SECONDS, Math.round(value)));
 }
 
 function stringOr(value: unknown, fallback: string): string {
