@@ -1,6 +1,6 @@
 {
   "name": "bayanflow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Windows-first AI dictation MVP with Groq transcription and cleanup.",
   "author": "BayanFlow",
   "main": "dist/main.cjs",
@@ -74,7 +74,7 @@
       "icon": "src/assets/tray-icon.ico",
       "legalTrademarks": "BayanFlow",
       "executableName": "BayanFlow",
-      "signAndEditExecutable": false
+      "signExecutable": false
     },
     "nsis": {
       "installerIcon": "src/assets/tray-icon.ico",

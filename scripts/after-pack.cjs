@@ -1,18 +1,27 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
 
 /**
  * GPU files Electron ships for workloads BayanFlow does not have.
  * The dock and settings windows are plain HTML with no WebGL, WebGPU or canvas
  * rendering, so the DirectX shader compilers and the SwiftShader software
- * Vulkan driver never load. Worth ~34 MB on disk.
+ * Vulkan driver never load. Worth ~32 MB on disk, measured.
  *
  * Deliberately kept:
  * - ffmpeg.dll holds the Opus encoder MediaRecorder needs for audio/webm.
  * - libGLESv2.dll / libEGL.dll are ANGLE, which still backs window compositing.
  * - d3dcompiler_47.dll is ANGLE's runtime shader compiler on the D3D11 path.
  * - LICENSES.chromium.html is required Chromium attribution.
+ *
+ * This hook used to also shell out to rcedit for the icon and version strings,
+ * because `signAndEditExecutable: false` had switched off electron-builder's own
+ * resource editing. That meant reaching into
+ * `node_modules/electron-winstaller/vendor/rcedit.exe` — a package four levels
+ * deep under a Squirrel target this project does not build, present only because
+ * npm hoists it, and never declared as a dependency. A future electron-builder
+ * minor could drop it and `npm run dist` would fail with ENOENT after packaging
+ * 281 MB. The config now uses `signExecutable: false`, which keeps the icon and
+ * metadata and skips only the signing, so none of that is needed.
  */
 const REMOVABLE_GPU_FILES = [
   "dxcompiler.dll",
@@ -26,36 +35,6 @@ exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== "win32") {
     return;
   }
-
-  const exeName = context.packager.appInfo.productFilename + ".exe";
-  const executablePath = path.join(context.appOutDir, exeName);
-  const rceditPath = path.join(context.packager.projectDir, "node_modules", "electron-winstaller", "vendor", "rcedit.exe");
-  const iconPath = path.join(context.packager.projectDir, "src", "assets", "tray-icon.ico");
-
-  execFileSync(
-    rceditPath,
-    [
-      executablePath,
-      "--set-icon",
-      iconPath,
-      "--set-version-string",
-      "ProductName",
-      "BayanFlow",
-      "--set-version-string",
-      "FileDescription",
-      "BayanFlow",
-      "--set-version-string",
-      "InternalName",
-      "BayanFlow",
-      "--set-version-string",
-      "OriginalFilename",
-      exeName,
-      "--set-version-string",
-      "CompanyName",
-      "BayanFlow",
-    ],
-    { stdio: "inherit" },
-  );
 
   let removedBytes = 0;
   for (const name of REMOVABLE_GPU_FILES) {
