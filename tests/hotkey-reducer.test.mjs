@@ -5,7 +5,7 @@ import {
   initialHotkeyState,
   reduceHotkey,
 } from "../dist/hotkey/hotkey-reducer.js";
-import { classifyPress } from "../dist/hotkey/hotkey-parser.js";
+import { classifyPress, matchesGlobalKey, toUiohookHotkey } from "../dist/hotkey/hotkey-parser.js";
 
 const CONFIG = { key: "SPACE", modifiers: ["CTRL", "SHIFT"] };
 const HELD = { ctrlKey: true, shiftKey: true, altKey: false, metaKey: false };
@@ -126,4 +126,19 @@ test("consume is false everywhere until task 23 attaches a hook that can", () =>
   for (const input of [down("SPACE", 0), up("SPACE", 1), { type: "detach" }]) {
     assert.equal(reduceHotkey(initialHotkeyState, input, CONFIG).consume, false);
   }
+});
+
+test("Esc matches the keycode uiohook actually reports", () => {
+  // uiohook calls keycode 1 "Escape"; every hotkey string in the app says "Esc".
+  // The two never matched, so the Esc-to-cancel binding was dead on arrival even
+  // though the README, the quick-start guide and the dock hint all promise it.
+  const esc = toUiohookHotkey("Esc");
+  assert.equal(esc.key, "ESC");
+  assert.equal(esc.modifiers.length, 0);
+  assert.equal(matchesGlobalKey("ESCAPE", esc.key), true);
+  assert.equal(matchesGlobalKey("ESC", esc.key), true);
+
+  // Still nothing else. The alias must not turn Esc into a wildcard.
+  assert.equal(matchesGlobalKey("SPACE", esc.key), false);
+  assert.equal(matchesGlobalKey("ENTER", esc.key), false);
 });
