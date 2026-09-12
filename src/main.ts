@@ -111,6 +111,24 @@ let lastUsedAppContext: AppContextSnapshot | null = null;
 /** True when the guard rejected the last cleanup output. */
 let lastGuardTripped = false;
 
+/**
+ * Audio from the dictation that just failed, kept so "Try again" can re-send it.
+ *
+ * This is the one place the app holds on to a recording after the fact, and it
+ * is deliberately narrow. Before this, a failed dictation deleted its audio in
+ * the `finally` block and "Try again" started a NEW recording — so a five-minute
+ * dictation that failed at transcription was five minutes of speech gone, with
+ * no way back. Losing a long dictation to a transient network blip is the worst
+ * thing this app can do to somebody.
+ *
+ * The bounds that keep it honest, agreed with the user before it was built:
+ *  - written only when a dictation FAILS, never on the success path
+ *  - replaced or deleted the moment the next dictation succeeds
+ *  - deleted on quit
+ *  - never uploaded anywhere except the retry the user explicitly asked for
+ */
+let failedAudio: { path: string; at: number } | null = null;
+
 /** Retry closure for the dock's "Try again" recovery button. */
 let lastRetry: (() => Promise<void>) | null = null;
 
@@ -330,6 +348,8 @@ app.on("will-quit", () => {
   hotkeySuppressor.release();
   clearRecordingLimitTimer();
   clearDockSnooze();
+  // Best effort: the audio must not outlive the session that produced it.
+  void discardFailedAudio();
   recorder.destroy();
   dock.destroy();
 });
@@ -862,6 +882,8 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
   let recorderStopMs = 0;
   let pipelineMs = 0;
   let insertionMs = 0;
+  /** Decides whether the audio is kept for a retry or deleted. */
+  let failed = false;
 
   try {
     const stopResult = await recorder.stop(context, reason);
@@ -925,6 +947,7 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
       finalChars: result.finalText.length,
     });
   } catch (error) {
+    failed = true;
     const normalized = normalizeError(failureCategory, error);
     lastErrorId = normalized.id;
     void logger.error("dictation.failed", { ...context, error: normalized });
@@ -954,8 +977,13 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
           pipelineMs,
           insertionMs,
         });
+      } else if (failed) {
+        // Hold it just long enough for one retry. Deleting here is what made a
+        // failed long dictation unrecoverable.
+        await keepFailedAudio(audioPath, context);
       } else {
         await deleteTempAudio(audioPath, context);
+        await discardFailedAudio(context);
       }
     }
     activeSessionId = null;
@@ -1059,14 +1087,75 @@ async function exportDebugCase(): Promise<void> {
   }
 }
 
+/** Holds the failed recording for one retry, dropping any older one. */
+async function keepFailedAudio(audioPath: string, context: OperationContext): Promise<void> {
+  const previous = failedAudio?.path;
+  if (previous && previous !== audioPath) {
+    await deleteTempAudio(previous, context);
+  }
+
+  failedAudio = { path: audioPath, at: Date.now() };
+  void logger.info("dictation.failed_audio.kept", context);
+}
+
+/** Drops the held recording. Called on the next success and on quit. */
+async function discardFailedAudio(context: OperationContext = {}): Promise<void> {
+  const held = failedAudio;
+  failedAudio = null;
+  if (held) {
+    await deleteTempAudio(held.path, context);
+    void logger.info("dictation.failed_audio.discarded", context);
+  }
+}
+
 /**
- * "Try again" after a failed dictation cannot re-run transcription, because the
- * temp audio is already deleted. It restarts the recording instead, which is
- * what the user wants and what the button implies.
+ * "Try again" after a failed dictation.
+ *
+ * Re-sends the audio we still have rather than asking the user to say it all
+ * again. Only if there is nothing to re-send does it start a fresh recording,
+ * which is the old behaviour and the right fallback.
  */
 async function stopRecordingRetry(): Promise<void> {
-  dock.showRest();
-  await startRecording();
+  const held = failedAudio;
+  if (!held) {
+    dock.showRest();
+    await startRecording();
+    return;
+  }
+
+  if (isRecording || isProcessing) {
+    return;
+  }
+
+  isProcessing = true;
+  const context = { requestId: createPrefixedId("retry") };
+  showWorking("Trying again");
+  refreshTray();
+
+  try {
+    const result = await runDictationPipeline(held.path, context);
+    if (!result.finalText) {
+      showDone("No text detected", "warn", false);
+      return;
+    }
+
+    await insertOrCopyText(result, context);
+    await discardFailedAudio(context);
+    void logger.info("dictation.retry.success", { ...context, finalChars: result.finalText.length });
+  } catch (error) {
+    const normalized = normalizeError("transcription", error);
+    lastErrorId = normalized.id;
+    void logger.error("dictation.retry.failed", { ...context, error: normalized });
+    // The audio is deliberately still held, so the user can try a third time.
+    showFailure(
+      failureForGroqError(normalized, "transcription"),
+      formatUserError(normalized.userMessage, normalized.id),
+      () => stopRecordingRetry(),
+    );
+  } finally {
+    isProcessing = false;
+    refreshTray();
+  }
 }
 
 async function insertOrCopyText(result: DictationResult, context: OperationContext): Promise<void> {
