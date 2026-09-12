@@ -10,7 +10,8 @@ let audioContext = null;
 let silenceInterval = null;
 let stopReason = "manual";
 
-const SILENCE_AUTO_STOP_MS = 5_000;
+/** Used only if the main process sends nothing; the real value is a setting. */
+const DEFAULT_SILENCE_AUTO_STOP_MS = 5_000;
 const VOICE_RMS_THRESHOLD = 0.025;
 
 window.recorderBridge.onStart(async (_event, options) => {
@@ -31,7 +32,8 @@ window.recorderBridge.onStart(async (_event, options) => {
     stopReason = "manual";
     stream = await openMicrophone(options?.microphoneId || "");
     mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-    startSilenceMonitor(stream, SILENCE_AUTO_STOP_MS);
+    const silenceMs = Number(options?.silenceStopMs) > 0 ? Number(options.silenceStopMs) : DEFAULT_SILENCE_AUTO_STOP_MS;
+    startSilenceMonitor(stream, silenceMs);
 
     mediaRecorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) {
