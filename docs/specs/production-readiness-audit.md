@@ -1029,3 +1029,108 @@ npm run local:smoke -> PASS
 ```
 
 Tests went 279 → 282.
+
+### 2026-09-12 — P1 done, and the long-dictation failure the org limits page hides
+
+You approved both P1 and the robustness work, and confirmed audio may be kept after a failure only.
+
+#### Order changed on purpose
+
+I said earlier that deletions go last. I did **P1 first** here, because the rate-limit handling below
+would otherwise have been written twice and then immediately merged. Merging first meant it was written
+once. The rule still holds generally; this was a case where the refactor shrank the work after it.
+
+#### P1 — the two providers are one
+
+`GroqCleanupProvider` and `GroqRewriteProvider` had the same four fields, constructor, `withModelFallback`
+wrapper, `retryTransient`/`withReasoningEffort` nesting, truncation check and three log lines. Their only
+real differences were a prompt, a label, and what an empty reply means.
+
+New `src/llm/groq-chat-provider.ts` holds the shared body. Both classes survive as thin subclasses that
+build a spec, so `main.ts` and every existing test are untouched.
+
+```txt
+removed from the two providers : 284 lines
+added back                     :  49 lines
+shared engine                  : 209 lines
+```
+
+All 11 pre-existing fallback and cooldown tests passed unchanged, which is the evidence the merge
+preserved behaviour rather than the diff being small.
+
+#### The org limits page does not show the limit that was breaking things
+
+Your limits page lists TPM only:
+
+| Model | RPM | RPD | TPM | TPD |
+|---|---|---|---|---|
+| `openai/gpt-oss-120b` | 30 | 1K | 8K | 200K |
+| `openai/gpt-oss-20b` | 30 | 1K | 8K | 200K |
+| `qwen/qwen3.6-27b` | 30 | 1K | 8K | 200K |
+| `whisper-large-v3` | 20 | 2K | 7.2K audio-sec/hr | 28.8K audio-sec/day |
+
+**There is no OTPM column, yet OTPM is what rejected the request.** The error names it explicitly —
+`output tokens per minute (OTPM): Limit 1000` — against a visible TPM of 8,000. Measured on this account:
+
+| Model | Visible TPM | Actual OTPM | How we know |
+|---|---|---|---|
+| `qwen/qwen3.6-27b` | 8,000 | **1,000** | the rejection text |
+| `openai/gpt-oss-120b` | 8,000 | **> 1,169** | declared 1,169, never rejected |
+
+So a hand-maintained table can never be the whole answer. It is a floor, not a ceiling.
+
+#### What a five-minute dictation used to do
+
+~750 words, ~4,200 characters. Cleanup declared **4,096** output tokens. Two separate faults followed.
+
+**Fault 1 — the cascade.** The rejection is a 429, so `withModelFallback` called `noteRateLimit()` and put
+the model in cooldown, then sent the *same* oversized ceiling to the fallback, which was rejected too and
+also cooled down. A "Request too large" is not a quota: nothing was consumed, the request was simply
+bigger than one call may declare. The result was that **one long dictation broke every dictation after
+it**, including two-second ones, until the cooldown expired.
+
+**Fault 2 — the data loss.** If transcription failed, the `finally` block deleted the temp audio and
+"Try again" called `startRecording()` — a *new* recording. **Five minutes of speech, gone.**
+
+#### What now happens
+
+1. **`src/llm/model-limits.ts`** — the per-model TPM table above, and `maxDeclarableOutputTokens`, which
+   subtracts the prompt's tokens from the ceiling. This is the "leave space for the prompt" part you
+   asked for: input and output share one bucket, so a longer prompt now shrinks the declared reply
+   ceiling instead of the two summing past the limit. A single request may claim at most 60% of the
+   minute, because context, cleanup and a Redo can all land inside the same one.
+2. **Retry inside the limit the provider named.** Groq prints the true ceiling in the rejection and asks
+   us to "reduce max_tokens and try again", so that is now exactly what happens — once, against the same
+   model, at 90% of the stated limit. This is the part that actually saves the long dictation, because it
+   is the only source that knows the hidden OTPM.
+3. **A sizing error no longer triggers a cooldown.** Genuine quota 429s still do.
+4. **Failed audio is kept for one retry.** "Try again" re-sends the recording instead of asking the user
+   to say it all again. Bounds agreed with you beforehand: written only on failure, replaced or deleted
+   on the next success, deleted on quit, never sent anywhere except the retry the user asked for.
+
+Note that item 1 alone would **not** have fixed the five-minute case: 60% of 8,000 TPM minus the prompt
+is still far above the hidden 1,000 OTPM. Item 2 is the fix; item 1 stops us over-declaring in the first
+place and is what keeps the prompt and reply inside the shared bucket.
+
+#### Verification
+
+```txt
+npm run build       -> exit 0 (589 KB)
+npm test            -> tests 292 | pass 292 | fail 0
+npm run local:smoke -> PASS
+```
+
+282 → 292. The ten new tests pin the real rejection string captured from your log:
+
+- The per-model table, the default for unknown and local models, and a ceiling that shrinks as the prompt
+  grows — asserting prompt + declared output stays inside TPM for a five-minute transcript.
+- A huge prompt still yields a usable ceiling rather than zero or negative, which the API rejects as
+  malformed.
+- The stated limit is parsed out of the real error text; a sizing rejection is told apart from a genuine
+  quota 429 in both directions.
+- End to end: an oversized cleanup is retried once with a smaller ceiling and succeeds; it does not cool
+  the model down; and a real quota 429 still does.
+
+**Not verified live:** no five-minute dictation was actually performed. The rejection string in the tests
+is the real one from your log, and the arithmetic is checked, but a genuine long dictation on the new
+build is the confirmation.
