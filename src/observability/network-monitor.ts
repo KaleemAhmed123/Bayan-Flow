@@ -13,7 +13,7 @@
  */
 
 import { net } from "../electron.js";
-import { logger } from "./app-logger.js";
+import { logger } from "./logger.js";
 
 /**
  * Defaults to online.

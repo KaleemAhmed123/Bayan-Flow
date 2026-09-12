@@ -22,7 +22,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { app } from "../electron.js";
-import { logger } from "../observability/app-logger.js";
+import { logger } from "../observability/logger.js";
 import { rateLimitCooldownFromHeaders, type HeaderSource, type RateLimitCooldown } from "./rate-limit-headers.js";
 
 /** At or above this, a cooldown is treated as a daily quota and persisted. */

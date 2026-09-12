@@ -7,7 +7,7 @@
  * meant one of them would eventually drift.
  */
 
-import { logger } from "../observability/app-logger.js";
+import { logger } from "../observability/logger.js";
 import { isRateLimitError, normalizeError } from "../observability/errors.js";
 import { headersFromError } from "./rate-limit-headers.js";
 import type { ModelCooldownManager } from "./model-cooldown.js";

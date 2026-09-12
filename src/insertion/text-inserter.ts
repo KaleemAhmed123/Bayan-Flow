@@ -1,6 +1,6 @@
 import { getActiveWindow, getWindows, Key, keyboard } from "@nut-tree-fork/nut-js";
 import { clipboard } from "../electron.js";
-import { logger } from "../observability/app-logger.js";
+import { logger } from "../observability/logger.js";
 import { normalizeError } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 

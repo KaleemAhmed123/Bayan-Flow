@@ -181,3 +181,19 @@ function shouldRedactKey(key: string): boolean {
 function looksSecret(value: string): boolean {
   return /gsk_[a-z0-9_-]{12,}|sk-[a-z0-9_-]{12,}|bearer\s+[a-z0-9._-]{12,}/i.test(value);
 }
+
+/**
+ * The app-wide logger instance.
+ *
+ * This used to be a separate `app-logger.ts` whose entire contents were one
+ * `new Logger()` and the function below. A module that exists only to hold a
+ * singleton reads like a layer and is not one, so it lives at the bottom of the
+ * module it instantiates.
+ */
+export const logger = new Logger();
+
+export function configureLogger(userDataPath: string, level: LogLevel = "info"): string {
+  const logDir = path.join(userDataPath, "logs");
+  logger.configure([new FileLogSink(logDir)], level);
+  return logDir;
+}

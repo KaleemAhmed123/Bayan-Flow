@@ -1,5 +1,5 @@
 import { globalShortcut } from "../electron.js";
-import { logger } from "../observability/app-logger.js";
+import { logger } from "../observability/logger.js";
 import { parseHotkey } from "./hotkey-parser.js";
 
 /**
