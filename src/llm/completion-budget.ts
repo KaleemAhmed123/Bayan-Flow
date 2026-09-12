@@ -30,12 +30,29 @@ export function usesReasoningTokens(model: string): boolean {
 /**
  * `extraTokens` is the room the answer needs beyond restating its input:
  * small for a tidy-up, larger for an open-ended custom instruction.
+ *
+ * `reasoningEffort` must match what the call actually sends. Budgeting for
+ * thinking that has been switched off is not a harmless over-estimate: Groq
+ * rejects a request whose declared `max_completion_tokens` exceeds the output
+ * tokens-per-minute allowance, before the model runs at all. The context call
+ * sends `"none"` and used 60-68 tokens in practice, but this function reserved
+ * 840 for reasoning and asked for 1,076 — over the free tier's 1,000 OTPM limit
+ * on its own. 16 of 59 context captures failed on
+ * `429 Request too large ... Limit 1000, Requested 1079`, and every one that
+ * succeeded ate the headroom the cleanup call needed next.
  */
-export function estimateOutputTokens(inputChars: number, model: string, extraTokens = 256): number {
+export function estimateOutputTokens(
+  inputChars: number,
+  model: string,
+  extraTokens = 256,
+  reasoningEffort: ReasoningEffort = "low",
+): number {
   const inputTokens = Math.ceil(Math.max(0, inputChars) / 4);
   // Reasoning length scales with how much text there is to think about, plus a
-  // fixed preamble the model spends before it commits to an answer.
-  const reasoningHeadroom = usesReasoningTokens(model) ? inputTokens * 2 + 768 : 0;
+  // fixed preamble the model spends before it commits to an answer. None of it
+  // is spent when reasoning is off.
+  const budgetsForReasoning = usesReasoningTokens(model) && reasoningEffort !== "none";
+  const reasoningHeadroom = budgetsForReasoning ? inputTokens * 2 + 768 : 0;
   const wanted = inputTokens + extraTokens + reasoningHeadroom;
 
   return Math.min(MAX_OUTPUT_TOKENS, Math.max(MIN_OUTPUT_TOKENS, wanted));
