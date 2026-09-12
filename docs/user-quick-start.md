@@ -1,76 +1,180 @@
-# BayanFlow User Quick Start
+# BayanFlow Quick Start
 
-## What BayanFlow Does
+BayanFlow lets you speak into any Windows app. Hold one key, talk, let go — the text lands where your
+cursor was, already tidied up.
 
-BayanFlow lets you dictate text into Windows apps. It records your voice, transcribes it, optionally cleans the text, and then copies or pastes it.
+It also rewrites text you have already typed.
 
-## First-Time Setup
+---
 
-1. Open BayanFlow.
-2. Add your Groq API key in Settings.
-3. Click `Test microphone`.
-4. Confirm the hotkey is active.
-5. Confirm the Input Assist hotkey if you want the floating magic icon.
-6. Save settings.
+## Installing
 
-Default hotkey: `Ctrl+Shift+Space`.
-Default Input Assist hotkey: `Ctrl+Shift+Enter`.
+1. Run `BayanFlow Setup.exe`.
+2. **Windows will show a blue "Windows protected your PC" screen.** This is expected. BayanFlow is not
+   code-signed yet, so Windows does not recognise it.
+   - Click **More info** (the small text).
+   - Click **Run anyway**.
+3. Finish the installer. BayanFlow starts and lives in your **system tray** — the icons near the clock.
 
-## How To Record
+There is no main window. The tray icon and a small pill at the bottom of your screen are the whole app.
 
-1. Click into the app where you want the text.
-2. Press the BayanFlow hotkey once.
-3. Confirm the overlay says recording is active.
-4. Speak.
-5. Press the hotkey again or click the check button on the overlay.
-6. Wait for processing.
+---
 
-If copy-only mode is enabled, press `Ctrl+V` where you want the text.
+## First-time setup
 
-## How To Use Input Assist
+BayanFlow needs a **Groq API key**. Groq is the service that turns your speech into text. Accounts are
+free and BayanFlow does not ship with a key, so everyone uses their own.
 
-1. Click into a text input.
-2. Press `Ctrl+Shift+Enter` to turn Input Assist on.
-3. If Windows can detect the input, a small BayanFlow icon appears near the right side of the input.
-4. Click the icon.
-5. Choose `Speak here` or a rewrite action.
+1. BayanFlow opens its window automatically on first launch. If it did not, **left-click the tray icon**.
+2. Go to **Settings → General**.
+3. Click **Get a free Groq key**. Your browser opens `console.groq.com/keys`.
+4. Sign up (free), create a key, and copy it.
+5. Paste it into the **Groq API key** box.
+6. Click **Save**.
+7. Click **Test microphone**, right below the microphone picker. Do this before your first real recording.
 
-Rewrite uses selected text first. If no text is selected, BayanFlow tries to use the whole focused input. You will see a preview before replacement.
+The **Home** page has a checklist that ticks off each step as you genuinely complete it.
 
-## Overlay And Tray State
+---
 
-The overlay appears near the top of the active display. If you cannot see it, check the BayanFlow tray icon tooltip. The tray status shows whether the app is ready, recording, processing, needs setup, or has a hotkey issue.
+## Dictating
 
-The Input Assist icon only appears when Windows exposes a focused editable input. Some custom-rendered, elevated, or full-screen apps may not expose enough information; in those cases, use normal dictation or copy/paste fallback.
+1. Click into any text box — email, chat, browser, editor, anything.
+2. **Hold** `Ctrl+Shift+Space`.
+3. Speak.
+4. **Let go.**
 
-## Copy-Only Vs Auto-Paste
+The text is transcribed, polished, and pasted where your cursor was. There is no confirmation step.
 
-Copy-only is the safer default. BayanFlow copies the transcript and lets you paste it manually.
+**For longer dictation, tap instead of holding.** A quick tap latches recording on, so you can take your
+hands off the keyboard. Tap again to finish.
 
-Auto-paste tries to paste into the original app window after recording. If Windows blocks this, BayanFlow keeps the result copied and shows a recovery message.
+**Press `Esc` at any time to cancel** and throw the audio away.
 
-## Common Problems
+**If you go quiet for about five seconds, recording stops on its own.** That is deliberate, so a
+forgotten latched recording does not run forever.
 
-### Microphone Permission Was Denied
+---
 
-Open Windows Settings -> Privacy & security -> Microphone. Make sure microphone access is enabled, then return to BayanFlow Settings and click `Test microphone`.
+## If you do not like the result
 
-### Hotkey Is Unavailable
+The dock shows a **Redo** button after every result.
 
-Another app may already use that shortcut. Try `Ctrl+Alt+Space`, save, and test again.
+Redo removes what it just pasted, rewrites your original speech differently, and pastes the new version.
+Press it as many times as you like. Each Redo works from what you actually said, not from the last
+attempt, so repeated presses never drift.
 
-### Input Assist Icon Does Not Appear
+This is why there is no preview screen. You get the result straight away, and changing it costs one click.
 
-Focus a normal text input and confirm Input Assist is enabled from the tray menu. Some apps do not expose editable input bounds to Windows, so BayanFlow hides the icon instead of guessing the wrong position.
+---
 
-### Recording Stops Early
+## Rewriting text you already typed
 
-BayanFlow may stop after silence or when the max duration is reached. Try speaking closer to the microphone and avoid long pauses.
+1. Click into a text box that already has text in it.
+2. Press `Ctrl+Shift+Enter`.
+3. The dock opens at the bottom of your screen with a menu.
 
-### Paste Failed
+**Always visible:** Polish, Professional, Shorten
+**Behind "More":** Fix grammar, Friendly, Expand, Simplify, Custom
 
-Your transcript should still be copied. Press `Ctrl+V` manually in the target app.
+**Custom** takes any one-off instruction, for example:
 
-### Support Needs Logs
+```txt
+Turn this into a short customer support reply
+Make this sound confident but not aggressive
+Convert these rough notes into clean bullet points
+```
 
-Open the tray menu and choose `Export Diagnostics`. The export contains sanitized logs and local app state, not transcript text or API keys.
+Select the text you want changed, or just leave your cursor in a line and BayanFlow rewrites that line.
+If replacing the text is not safe, BayanFlow copies the result instead and tells you to press `Ctrl+V` —
+it never guesses.
+
+---
+
+## The pill
+
+When nothing is happening, BayanFlow sits at the **bottom centre** of your screen as a small pill.
+
+- **Click it** to start dictating.
+- **Hover it** to reveal Dictate, Rewrite, Settings, and Hide for 1 hour.
+- **The dot is green** when BayanFlow is ready, **grey** when it still needs setup.
+
+Everything happens in that one spot. It never follows your mouse and never covers what you are typing into.
+
+Don't want it? Turn off **Keep the pill on screen** in Settings, or use the tray menu. The minus button
+on the pill hides it for an hour.
+
+---
+
+## The tray menu
+
+Right-click the tray icon:
+
+- **Show the pill** / **Paste automatically** — quick toggles.
+- **Add clipboard word to vocabulary** — copy a name BayanFlow keeps misspelling, then click this. It
+  will get it right from then on.
+- **Settings** — the main window.
+- **Open Logs Folder** / **Export Diagnostics** — for when you need to send me something.
+
+Left-click the tray icon opens Settings directly.
+
+---
+
+## What is stored, and what leaves your PC
+
+Worth knowing up front:
+
+| Thing | Where it goes |
+|---|---|
+| Your speech | Sent to Groq to be transcribed, then discarded. The audio file is deleted right after. |
+| Your API key | Encrypted and stored on this PC only. Never sent anywhere except Groq. |
+| **Your dictation history** | **Saved on this PC**, in plain text, so the History and Stats pages can exist. **On by default.** Turn it off, or clear it, in **Settings → Privacy**. |
+| **The title of the window you are typing in** | **Sent to Groq with each dictation**, so it spells names on your screen correctly. **On by default.** Turn it off in **Settings → Privacy**. |
+| A screenshot of your active window | **Off by default.** Opt-in only, in Settings → Privacy, with a blocklist for windows it must never look at. |
+| Logs | Stay on this PC. Your dictated text is stripped out of them. |
+
+**Export Diagnostics** contains sanitised logs and app state — never your transcripts and never your key.
+
+---
+
+## Common problems
+
+### Nothing happens when I double-click BayanFlow
+
+Your antivirus has probably quarantined part of it. BayanFlow watches for your hotkey using a Windows
+keyboard hook, and security software sometimes blocks that in unsigned apps. Allow BayanFlow in your
+antivirus and reinstall. BayanFlow will show an error box explaining this if it can.
+
+### The hotkey does nothing
+
+Another app may already own that shortcut. Change it in **Settings → Shortcuts** — try `Ctrl+Alt+Space`.
+The Home page shows whether the hotkey registered.
+
+### "Microphone permission was denied"
+
+Windows Settings → Privacy & security → Microphone. Make sure microphone access is on, and that desktop
+apps are allowed. Then come back and click **Test microphone**.
+
+### My first recording came back empty
+
+Opening the microphone takes a moment on a cold start. If you released the key very quickly, BayanFlow
+tells you the microphone was still starting — just press again.
+
+### Recording stopped while I was still thinking
+
+BayanFlow stops after about five seconds of silence. Speak again sooner, or dictate in shorter pieces.
+
+### "Paste blocked" / the text did not appear
+
+Your text is on the clipboard. Press `Ctrl+V`. Some apps refuse a synthetic paste; BayanFlow always
+leaves the result on the clipboard so nothing is ever lost.
+
+### It keeps misspelling a name
+
+Add it to your vocabulary — **Settings → Dictation → Custom vocabulary**, one per line. Or copy the word
+and use **Add clipboard word to vocabulary** in the tray menu. Vocabulary always beats what BayanFlow
+guesses from your screen.
+
+### Something else is wrong
+
+Tray menu → **Export Diagnostics**, then send me the folder. It has no transcripts and no API key in it.
