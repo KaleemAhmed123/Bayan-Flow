@@ -15,7 +15,7 @@ import Groq from "groq-sdk";
 import { desktopCapturer } from "../electron.js";
 import { estimateOutputTokens, isTruncated, withReasoningEffort } from "../llm/completion-budget.js";
 import { buildClientOptions, DEFAULT_CONTEXT_TIMEOUT_MS, type EndpointSettings } from "../llm/client-options.js";
-import { logger } from "../observability/app-logger.js";
+import { logger } from "../observability/logger.js";
 import { normalizeError } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 import {
@@ -86,6 +86,16 @@ export type ChatClientLike = {
 const CONTEXT_ANSWER_TOKENS = 200;
 
 /**
+ * Not "low". Describing a window needs no reasoning, and on this model "low"
+ * still spent the entire output budget thinking and returned nothing.
+ *
+ * Shared with `estimateOutputTokens` so the declared ceiling and the requested
+ * effort cannot drift apart, which is exactly what happened: the request said
+ * "do not think" while the budget reserved 840 tokens for thinking.
+ */
+const CONTEXT_REASONING_EFFORT = "none" as const;
+
+/**
  * Finds the capture source for the focused window.
  *
  * The two sides come from different APIs — the title from the window manager,
@@ -129,6 +139,17 @@ export class AppContextService {
   private pending: Promise<AppContextSnapshot> | null = null;
   private metadataOnly: AppContextSnapshot = EMPTY_CONTEXT;
   private cancelled = false;
+  /**
+   * Which capture owns the shared `metadataOnly` slot.
+   *
+   * A capture awaits `getWindowSignals()` before publishing its metadata. If a
+   * second dictation starts inside that window, the first capture resumes and
+   * overwrites the new session's app name and window title with the previous
+   * window's — quietly feeding the wrong context into the next cleanup prompt.
+   * The `cancelled` flag cannot catch it, because `start()` clears the flag
+   * again immediately after calling `cancel()`.
+   */
+  private generation = 0;
   private readonly createClient: (apiKey: string) => ChatClientLike;
   /**
    * Set on every `start`, because settings can change between dictations and
@@ -157,13 +178,14 @@ export class AppContextService {
     this.endpoint = settings.endpoint ?? {};
     this.cancel();
     this.cancelled = false;
+    const generation = (this.generation += 1);
 
     if (!settings.enabled) {
       this.metadataOnly = { ...EMPTY_CONTEXT, reason: "disabled" };
       return;
     }
 
-    this.pending = this.capture(settings, context).catch((error) => {
+    this.pending = this.capture(settings, context, generation).catch((error) => {
       void logger.warn("context.capture.failed", { ...context, error: normalizeError("config", error) });
       return { ...EMPTY_CONTEXT, reason: "capture_failed" };
     });
@@ -204,7 +226,15 @@ export class AppContextService {
   private async capture(
     settings: ContextCaptureSettings,
     context: OperationContext,
+    generation: number,
   ): Promise<AppContextSnapshot> {
+    /** Only the newest capture may write the slot the next dictation will read. */
+    const publishMetadata = (snapshot: AppContextSnapshot): void => {
+      if (generation === this.generation) {
+        this.metadataOnly = snapshot;
+      }
+    };
+
     const signals = await this.getWindowSignals().catch(() => null);
     const windowTitle = truncateTitle(signals?.title ?? "");
 
@@ -212,17 +242,18 @@ export class AppContextService {
       // Nothing is recorded here, not even which pattern matched: that would
       // put the blocked window's identity in the log we were protecting it from.
       const blocked: AppContextSnapshot = { ...EMPTY_CONTEXT, blocked: true, reason: "blocked" };
-      this.metadataOnly = blocked;
+      publishMetadata(blocked);
       void logger.info("context.capture.blocked", { ...context });
       return blocked;
     }
 
     const appName = signals?.appName?.trim() ?? "";
     // Published immediately so a stop-time timeout still has something useful.
-    this.metadataOnly = { ...EMPTY_CONTEXT, appName, windowTitle };
+    const metadata: AppContextSnapshot = { ...EMPTY_CONTEXT, appName, windowTitle };
+    publishMetadata(metadata);
 
     if (!settings.apiKey) {
-      return { ...this.metadataOnly, reason: "no_api_key" };
+      return { ...metadata, reason: "no_api_key" };
     }
 
     const screenshotDataUrl = settings.screenshotEnabled ? await this.captureScreenshot(windowTitle, context) : null;
@@ -301,7 +332,16 @@ export class AppContextService {
 
     try {
       const client = this.createClient(settings.apiKey);
-      const maxOutputTokens = estimateOutputTokens(textPrompt.length, settings.model, CONTEXT_ANSWER_TOKENS);
+      // CONTEXT_REASONING_EFFORT is passed to both the budget and the request, so
+      // the ceiling we declare matches the work we actually ask for. Declaring a
+      // reasoning budget for a call that does no reasoning is what pushed this
+      // request over the free tier's output-per-minute limit.
+      const maxOutputTokens = estimateOutputTokens(
+        textPrompt.length,
+        settings.model,
+        CONTEXT_ANSWER_TOKENS,
+        CONTEXT_REASONING_EFFORT,
+      );
 
       const completion = await withReasoningEffort(
         settings.model,
@@ -317,10 +357,7 @@ export class AppContextService {
             ],
           }),
         () => logger.warn("context.infer.reasoning_effort_unsupported", { ...context, model: settings.model }),
-        // Not "low". Describing a window needs no reasoning, and on this model
-        // "low" still spent the entire output budget thinking and returned
-        // nothing. See the ReasoningEffort docs.
-        "none",
+        CONTEXT_REASONING_EFFORT,
       );
 
       const choice = completion.choices?.[0];
