@@ -1,12 +1,15 @@
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { configureLogger, logger, sanitize } from "./observability/logger.js";
+import { createPrefixedId } from "./ids.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assetsDir } from "./app-paths.js";
+import { assetsDir, LEGACY_TEMP_AUDIO_DIR_NAMES, TEMP_AUDIO_DIR_NAME } from "./app-paths.js";
 import { AudioRecorder } from "./audio/audio-recorder.js";
 import { GroqCleanupProvider } from "./cleanup/groq-cleanup-provider.js";
 import {
   ConfigStore,
+  isKeyEncryptionAvailable,
   MAX_VOCABULARY_TERMS,
   MAX_VOCABULARY_TERM_CHARS,
   parseVocabularyTerms,
@@ -18,14 +21,12 @@ import { appNameFromTitle, parseBlocklist } from "./context/context-rules.js";
 import { runDictationPipelineWithProviders } from "./dictation/dictation-pipeline.js";
 import { app, clipboard, crashReporter, dialog, Menu, nativeImage, shell, Tray } from "./electron.js";
 import { HistoryStore } from "./history/history-store.js";
-import { HotkeyListener } from "./hotkey/hotkey-listener.js";
+import { HotkeyWatcher } from "./hotkey/hotkey-listener.js";
 import { HotkeySuppressor, type SuppressionResult } from "./hotkey/hotkey-suppressor.js";
 import { classifyPress } from "./hotkey/hotkey-parser.js";
 import { TextInserter, isUsableTarget, replaceLastOccurrence } from "./insertion/text-inserter.js";
-import { configureLogger, logger } from "./observability/app-logger.js";
 import { normalizeError, setOnlineChecker, type ErrorCategory, type NormalizedError } from "./observability/errors.js";
 import { isOnline, startNetworkMonitor } from "./observability/network-monitor.js";
-import { sanitize } from "./observability/logger.js";
 import { OverlayDock } from "./overlay/overlay-dock.js";
 import {
   DOCK_SNOOZE_MS,
@@ -63,9 +64,7 @@ const STALE_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
 let tray: InstanceType<typeof Tray> | null = null;
 let config: AppConfig;
-let hotkeyListener: HotkeyListener | null = null;
-let rewriteHotkeyListener: HotkeyListener | null = null;
-let cancelHotkeyListener: HotkeyListener | null = null;
+const hotkeyWatcher = new HotkeyWatcher();
 /** Outcome of the last suppression attempt, so Settings can report a refusal. */
 let lastSuppression: SuppressionResult | null = null;
 let isRecording = false;
@@ -148,15 +147,11 @@ let providerCache: {
 const recorder = new AudioRecorder();
 const hotkeySuppressor = new HotkeySuppressor();
 const inserter = new TextInserter();
-// Both hotkeys can be the one still under the user's fingers when we paste, so
-// either holding its modifiers is enough to make a synthetic shortcut wait.
-// Read through the module bindings rather than captured values, because
-// restartHotkeyListeners() replaces the listener objects on every settings save.
-inserter.setModifierGuard(
-  () =>
-    Boolean(hotkeyListener?.areHotkeyModifiersDown()) ||
-    Boolean(rewriteHotkeyListener?.areHotkeyModifiersDown()),
-);
+// Either hotkey can be the one still under the user's fingers when we paste, so
+// either holding its modifiers is enough to make a synthetic shortcut wait. The
+// watcher tracks all of them, so this is one question rather than a list that
+// has to be kept in step with the bindings.
+inserter.setModifierGuard(() => hotkeyWatcher.areHotkeyModifiersDown());
 /**
  * Reads the window signals from the paste target we already captured at the top
  * of `startRecording`, rather than querying the OS a second time. One window
@@ -201,9 +196,12 @@ historyStore = new HistoryStore();
 // account, so every provider must consult and update the same state.
 modelCooldown = new ModelCooldownManager();
 
+// `app.quit()` only requests a quit; this is top-level module code with no
+// `return` to take, so without exiting here the losing instance carries on and
+// registers the whole startup chain behind a quit that may not have landed yet.
 if (!app.requestSingleInstanceLock()) {
   writeEarlyStartupDiagnostic("single_instance.already_running");
-  app.quit();
+  app.exit(0);
 }
 
 app.on("second-instance", () => {
@@ -286,11 +284,13 @@ app.whenReady()
         // needs to be told which of theirs did not take.
         hotkeysNotSuppressed: lastSuppression?.rejected ?? [],
         logDir,
+        apiKeyEncrypted: isKeyEncryptionAvailable(),
       }),
       async () => {
         try {
           await recorder.testMicrophone();
           lastMicError = "";
+          void markOnboardingStep("didTestMicrophone");
           void logger.info("recorder.mic_test.success");
         } catch (error) {
           const normalized = normalizeError("recorder", error);
@@ -324,9 +324,7 @@ app.whenReady()
 
 app.on("will-quit", () => {
   void logger.info("app.shutdown.begin");
-  hotkeyListener?.stop();
-  rewriteHotkeyListener?.stop();
-  cancelHotkeyListener?.stop();
+  hotkeyWatcher.stop();
   // Electron releases these on exit anyway, but doing it explicitly keeps the
   // "who is holding this key" answer inside one class.
   hotkeySuppressor.release();
@@ -484,7 +482,7 @@ async function runRecovery(action: DockRecoveryAction): Promise<void> {
       return;
     case "copy":
       if (lastInsertion) {
-        inserter.copyText(lastInsertion.insertedText, { requestId: createId("recovery-copy") });
+        inserter.copyText(lastInsertion.insertedText, { requestId: createPrefixedId("recovery-copy") });
         showDone("Copied · press Ctrl+V", "ok", true);
         return;
       }
@@ -548,7 +546,7 @@ function updateTrayMenu(settingsWindow: SettingsWindow): void {
         : []),
       { label: "Settings", click: () => void settingsWindow.show() },
       { label: "Open Logs Folder", click: () => void openLogsFolder() },
-      { label: "Export Diagnostics", click: () => void exportDiagnostics() },
+      { label: "Export Diagnostics", click: () => void exportDiagnosticsSafely() },
       { type: "separator" },
       { label: "Quit", click: () => app.quit() },
     ]),
@@ -633,28 +631,28 @@ function formatRuntimeState(state: RuntimeState): string {
  * ------------------------------------------------------------------ */
 
 function restartHotkeyListeners(): void {
-  hotkeyListener?.stop();
-  rewriteHotkeyListener?.stop();
-  cancelHotkeyListener?.stop();
-
-  hotkeyListener = new HotkeyListener(config.hotkey, {
-    onPressed: () => void handleDictationKeyDown(),
-    onReleased: (heldMs) => handleDictationKeyUp(heldMs),
-  });
-  rewriteHotkeyListener = new HotkeyListener(config.inputAssistHotkey, {
-    onPressed: () => void openRewriteMenu(),
-  });
-  // Esc is observed, not consumed, so the focused app still receives it.
-  cancelHotkeyListener = new HotkeyListener("Esc", {
-    onPressed: () => {
-      if (isRecording) {
-        void cancelRecording();
-      }
+  // Bindings are swapped in place. The hook is never stopped here, so a settings
+  // save cannot leave a window in which no hotkey is being watched.
+  const watchedCount = hotkeyWatcher.setBindings([
+    {
+      hotkey: config.hotkey,
+      onPressed: () => void handleDictationKeyDown(),
+      onReleased: (heldMs) => handleDictationKeyUp(heldMs),
     },
-  });
+    { hotkey: config.inputAssistHotkey, onPressed: () => void openRewriteMenu() },
+    {
+      // Esc is observed, not consumed, so the focused app still receives it. It
+      // is never registered with the OS: a bare key reserved globally would be
+      // swallowed in every application.
+      hotkey: "Esc",
+      onPressed: () => {
+        if (isRecording) {
+          void cancelRecording();
+        }
+      },
+    },
+  ]);
 
-  // Esc is never passed in: a bare key registered with the OS would be
-  // swallowed in every application, and the suppressor refuses it anyway.
   if (config.suppressHotkeyInOtherApps) {
     lastSuppression = hotkeySuppressor.apply([config.hotkey, config.inputAssistHotkey]);
   } else {
@@ -663,10 +661,15 @@ function restartHotkeyListeners(): void {
   }
 
   try {
-    hotkeyListener.start();
-    rewriteHotkeyListener.start();
-    cancelHotkeyListener.start();
-    hotkeyAvailable = true;
+    hotkeyWatcher.start();
+    // A dropped binding means a hotkey nobody is watching, so do not report the
+    // hotkeys as available when one of the three failed to parse.
+    hotkeyAvailable = watchedCount === 3;
+    if (!hotkeyAvailable) {
+      void logger.warn("hotkey.bindings.incomplete", { watchedCount });
+      showFailure("hotkey", "One of your hotkeys could not be registered. Check Settings, Shortcuts.");
+    }
+
     refreshDockIdle();
     refreshTray();
   } catch (error) {
@@ -750,9 +753,12 @@ async function startRecording(): Promise<void> {
   isRecording = true;
   isRecorderReady = false;
   recordingStartedAt = Date.now();
-  activeSessionId = createId("session");
+  activeSessionId = createPrefixedId("session");
   const context = currentContext();
-  activePasteTarget = await captureTarget(context.sessionId ?? createId("dictation-target"));
+  activePasteTarget = await captureTarget(context.sessionId ?? createPrefixedId("dictation-target"));
+  // The dock picks its display from this, so it lands on the screen the user is
+  // typing on rather than the one the mouse happens to be resting on.
+  dock.setAnchorWindow(activePasteTarget?.bounds ?? null);
   lastPasteTargetCaptured = Boolean(activePasteTarget);
   lastPasteUsedHandle = activePasteTarget?.handle !== null && activePasteTarget?.handle !== undefined;
   lastStopReason = "";
@@ -778,6 +784,7 @@ async function startRecording(): Promise<void> {
       microphoneId: config.microphoneId,
       maxDurationMs: MAX_RECORDING_DURATION_MS + 10_000,
       maxAudioBytes: MAX_AUDIO_BYTES,
+      silenceStopMs: config.silenceStopSeconds * 1_000,
     });
     // The device is open now, so the prompt can stop hedging. Repainting also
     // covers a tap that latched while we were still waiting.
@@ -873,11 +880,16 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
       return;
     }
 
-    failureCategory = "transcription";
-    failureKind = "transcription";
     lastUsedAppContext = null;
     lastGuardTripped = false;
+    // Checked while the category is still "recorder": the size limit is a
+    // recording problem, and normalizeError only keeps the "too large" wording
+    // for that category. Setting "transcription" first replaced the one useful
+    // sentence ("try a shorter dictation") with a flat "Transcription failed"
+    // for a request that was never even sent.
     await assertAudioWithinLimits(audioPath);
+    failureCategory = "transcription";
+    failureKind = "transcription";
     const pipelineStartedAt = Date.now();
     const result = await runDictationPipeline(audioPath, context);
     pipelineResult = result;
@@ -904,6 +916,7 @@ async function stopRecording(reason: RecorderStopReason = "manual"): Promise<voi
     const insertionStartedAt = Date.now();
     await insertOrCopyText(result, context);
     insertionMs = Date.now() - insertionStartedAt;
+    void markOnboardingStep("didDictate");
     void logger.info("dictation.success", {
       ...context,
       autoPaste: config.autoPaste,
@@ -1164,7 +1177,7 @@ async function redoLastInsertion(): Promise<void> {
   }
 
   const insertion = lastInsertion;
-  const context = { requestId: createId("redo") };
+  const context = { requestId: createPrefixedId("redo") };
   rewriteInFlight = true;
   insertion.attempt += 1;
   refreshTray();
@@ -1284,12 +1297,13 @@ async function openRewriteMenu(): Promise<void> {
 
   // Capture the target BEFORE the menu takes focus, otherwise the active
   // window becomes the dock itself.
-  rewriteTarget = await captureTarget(createId("rewrite-target"));
+  rewriteTarget = await captureTarget(createPrefixedId("rewrite-target"));
   if (!rewriteTarget) {
     showFailure("generic", "Click into the text box first, then press the rewrite hotkey.");
     return;
   }
 
+  dock.setAnchorWindow(rewriteTarget.bounds ?? null);
   dock.setView({
     kind: "menu",
     actions: getDockMenuActions(),
@@ -1319,7 +1333,7 @@ async function runRewrite(actionId: string, customInstruction?: string): Promise
   }
 
   const action = getRewriteAction(actionId);
-  const context = { requestId: createId("rewrite") };
+  const context = { requestId: createPrefixedId("rewrite") };
   // Local, not `lastInsertion`: a previous dictation leaves `lastInsertion` set,
   // and reading it here made a failed API call report "could not replace the
   // text" and copy the old dictation onto the clipboard.
@@ -1342,6 +1356,16 @@ async function runRewrite(actionId: string, customInstruction?: string): Promise
     const sourceText = scoped ? selection! : whole;
     const scope = scoped ? "selection" : "whole";
 
+    // Checked before the call, not after it. The ceiling is known the moment the
+    // input is read, and asking the model to rewrite text we will then refuse to
+    // paste spends the user's quota and several seconds of their time for a
+    // result that is thrown away.
+    if (whole.length > MAX_REWRITE_INPUT_CHARS) {
+      void logger.warn("rewrite.whole_too_large", { ...context, wholeChars: whole.length });
+      showFailure("generic", "That input is too long to edit safely. Select a smaller part and try again.");
+      return;
+    }
+
     showWorking(`${action.label}...`);
     rewritten = await getRewriteProvider(config).rewrite(
       sourceText,
@@ -1360,19 +1384,13 @@ async function runRewrite(actionId: string, customInstruction?: string): Promise
 
     // Ctrl+A selects everything, so the paste always replaces and can never
     // append. Only a scoped rewrite is spliced back into the surrounding text.
-    if (whole.length > MAX_REWRITE_INPUT_CHARS) {
-      inserter.copyText(rewritten, context);
-      void logger.warn("rewrite.whole_too_large", { ...context, wholeChars: whole.length });
-      showFailure("paste_blocked", "That input is too long to edit safely. The rewrite is on your clipboard — press Ctrl+V.");
-      return;
-    }
-
     const nextWhole = scoped ? replaceLastOccurrence(whole, selection!, rewritten) : rewritten;
     await inserter.replaceWholeTextByClipboard(whole, nextWhole, target, context);
 
     lastInsertion.pasted = true;
     lastInsertion.insertedText = scoped ? rewritten : nextWhole;
     showDone(`${action.label} applied`, "ok", true);
+    void markOnboardingStep("didRewrite");
     void logger.info("rewrite.success", {
       actionId,
       scope,
@@ -1412,8 +1430,8 @@ async function runDictationPipeline(audioPath: string, context: OperationContext
     audioPath,
     context,
     cleanupEnabled: config.cleanupEnabled,
-    transcriptionRequestId: createId("transcription"),
-    cleanupRequestId: createId("cleanup"),
+    transcriptionRequestId: createPrefixedId("transcription"),
+    cleanupRequestId: createPrefixedId("cleanup"),
     transcription: providers.transcription,
     cleanup: config.cleanupEnabled ? providers.cleanup : undefined,
     transcriptionLanguage: config.transcriptionLanguage,
@@ -1585,7 +1603,7 @@ async function exportDiagnostics(): Promise<void> {
     paths: {
       userData: app.getPath("userData"),
       logs: target,
-      tempAudio: path.join(os.tmpdir(), "whispr-clone"),
+      tempAudio: path.join(os.tmpdir(), TEMP_AUDIO_DIR_NAME),
     },
   };
 
@@ -1595,6 +1613,25 @@ async function exportDiagnostics(): Promise<void> {
   void logger.info("diagnostics.export.success", { exportDir });
   showDone("Diagnostics exported", "ok", false);
   await shell.showItemInFolder(diagnosticsPath);
+}
+
+/**
+ * Wraps the export so a failure is visible.
+ *
+ * This is the one action whose whole purpose is to work when other things are
+ * broken, and it was the only export path with no error handling at all: a full
+ * disk or a locked log folder produced a menu click that did nothing, and the
+ * rejection was written to the very log the user was trying to send.
+ */
+async function exportDiagnosticsSafely(): Promise<void> {
+  try {
+    await exportDiagnostics();
+  } catch (error) {
+    const normalized = normalizeError("config", error);
+    lastErrorId = normalized.id;
+    void logger.error("diagnostics.export.failed", { error: normalized });
+    showFailure("generic", `Could not export diagnostics. (${normalized.id})`);
+  }
 }
 
 async function exportSanitizedLogs(sourceDir: string, exportDir: string): Promise<void> {
@@ -1638,10 +1675,21 @@ async function assertAudioWithinLimits(audioPath: string): Promise<void> {
 }
 
 async function cleanupStaleTempAudio(): Promise<void> {
-  const dir = path.join(os.tmpdir(), "whispr-clone");
+  const dir = path.join(os.tmpdir(), TEMP_AUDIO_DIR_NAME);
   await mkdir(dir, { recursive: true }).catch(() => undefined);
+  // The folder was renamed in 0.2.0. Sweeping the old name too means an upgrade
+  // does not leave a pile of recordings nothing will ever clean up again.
+  for (const legacy of LEGACY_TEMP_AUDIO_DIR_NAMES) {
+    await sweepTempAudioDir(path.join(os.tmpdir(), legacy), 0);
+  }
+
+  await sweepTempAudioDir(dir, STALE_TEMP_MAX_AGE_MS);
+}
+
+/** Deletes `.webm` files older than `maxAgeMs`. Zero means every one of them. */
+async function sweepTempAudioDir(dir: string, maxAgeMs: number): Promise<void> {
   const files = await readdir(dir).catch(() => []);
-  const cutoff = Date.now() - STALE_TEMP_MAX_AGE_MS;
+  const cutoff = Date.now() - maxAgeMs;
 
   await Promise.all(
     files
@@ -1667,13 +1715,27 @@ function clearRecordingLimitTimer(): void {
   recordingLimitTimer = null;
 }
 
+/**
+ * Records that the user genuinely completed an onboarding step.
+ *
+ * Called only from the success path of the real action, never from "no error has
+ * happened yet". Writes at most once per step, so the normal case is a boolean
+ * check and no disk touch.
+ */
+async function markOnboardingStep(step: "didTestMicrophone" | "didDictate" | "didRewrite"): Promise<void> {
+  if (config[step]) {
+    return;
+  }
+
+  config = { ...config, [step]: true };
+  await configStore.save(config);
+  void logger.info("onboarding.step.completed", { step });
+}
+
 function currentContext(): OperationContext {
   return activeSessionId ? { sessionId: activeSessionId } : {};
 }
 
-function createId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function applyLoginItemSettings(nextConfig: AppConfig): void {
   if (!app.isPackaged) {
