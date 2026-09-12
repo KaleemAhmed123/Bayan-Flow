@@ -6,8 +6,7 @@ import test from "node:test";
 import { GroqCleanupProvider } from "../dist/cleanup/groq-cleanup-provider.js";
 import { ConfigStore } from "../dist/config-store.js";
 import { normalizeError, setOnlineChecker } from "../dist/observability/errors.js";
-import { logger } from "../dist/observability/app-logger.js";
-import { FileLogSink, Logger, sanitize } from "../dist/observability/logger.js";
+import { FileLogSink, Logger, logger, sanitize } from "../dist/observability/logger.js";
 import { GroqRewriteProvider } from "../dist/rewrite/groq-rewrite-provider.js";
 
 test("logger redacts sensitive fields and writes json lines", async () => {
