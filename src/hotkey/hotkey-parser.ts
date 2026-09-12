@@ -114,6 +114,15 @@ export function matchesGlobalKey(actual: string, expected: string): boolean {
     return matchesGlobalKey(actual, "CTRL") || matchesGlobalKey(actual, "COMMAND");
   }
 
+  // uiohook names keycode 1 "Escape", and everyone writes the hotkey as "Esc".
+  // Without this alias the two never met, so the Esc binding matched nothing and
+  // cancelling a recording with Esc has never actually worked — despite being
+  // documented in the README, the quick-start guide and the dock's own
+  // "Release to finish · Esc cancels" hint.
+  if (expected === "ESC" || expected === "ESCAPE") {
+    return actual === "ESC" || actual === "ESCAPE";
+  }
+
   return false;
 }
 
