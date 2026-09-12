@@ -122,3 +122,35 @@ test("a real failure is not swallowed by the reasoning fallback", async () => {
   );
   assert.equal(calls, 1, "must not retry a genuine error");
 });
+
+test("reasoning headroom is not reserved when reasoning is switched off", () => {
+  // The real failure: the context call sends reasoning_effort "none" and uses
+  // 60-68 output tokens, but the budget reserved 840 for thinking and declared
+  // max_completion_tokens 1076. Groq rejects a request whose declared ceiling
+  // exceeds the free tier's 1000 output-tokens-per-minute allowance, before the
+  // model runs — so 16 of 59 context captures died on
+  // "429 Request too large ... Limit 1000, Requested 1079".
+  const contextPromptChars = 144;
+  const withReasoning = estimateOutputTokens(contextPromptChars, "qwen/qwen3.6-27b", 200, "low");
+  const withoutReasoning = estimateOutputTokens(contextPromptChars, "qwen/qwen3.6-27b", 200, "none");
+
+  assert.equal(withReasoning, 1076, "the old behaviour, still correct when the model really thinks");
+  assert.ok(withoutReasoning < 1000, `must fit under the free-tier OTPM limit, got ${withoutReasoning}`);
+  assert.ok(withoutReasoning < withReasoning);
+});
+
+test("output budget still defaults to reserving reasoning headroom", () => {
+  // Cleanup and rewrite do reason, and shrinking their ceiling is what caused
+  // replies to be cut off mid-sentence. Only an explicit "none" opts out.
+  const base = estimateOutputTokens(2000, "openai/gpt-oss-120b", 256);
+  assert.equal(base, estimateOutputTokens(2000, "openai/gpt-oss-120b", 256, "low"));
+  assert.ok(base > estimateOutputTokens(2000, "openai/gpt-oss-120b", 256, "none"));
+});
+
+test("a non-reasoning model is unaffected by the effort argument", () => {
+  const model = "whisper-large-v3";
+  assert.equal(
+    estimateOutputTokens(500, model, 256, "low"),
+    estimateOutputTokens(500, model, 256, "none"),
+  );
+});
