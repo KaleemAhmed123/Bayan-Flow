@@ -101,6 +101,7 @@
           <section class="callout" id="setupNotice" hidden>
             <span>Add your Groq API key, then save. Nothing works until the key is set.</span>
             <button class="btn btn-primary btn-small" id="setupNoticeGo" type="button">Add key</button>
+            <button class="btn btn-small" id="setupNoticeGetKey" type="button">Get a free key</button>
           </section>
 
           <div class="tiles" id="homeTiles"></div>
@@ -305,10 +306,16 @@
                   <p>Your key is stored on this machine and is only ever sent to Groq.</p>
                 </div>
 
-                <div class="field" data-keywords="groq api key token credential account">
+                <div class="field" data-keywords="groq api key token credential account console signup free">
                   <label class="field-label" for="groqApiKey">Groq API key</label>
                   <input id="groqApiKey" type="password" autocomplete="off" />
-                  <span class="field-help">Nothing works until this is set. Create one in the Groq console.</span>
+                  <span class="field-help">
+                    Nothing works until this is set. Groq accounts are free — the button below opens
+                    <strong>console.groq.com/keys</strong> in your browser, where you can create one.
+                  </span>
+                  <div class="field-row">
+                    <button class="btn btn-small" id="openGroqConsole" type="button">Get a free Groq key</button>
+                  </div>
                 </div>
 
                 <div class="field" data-keywords="microphone mic input device audio recording headset">
@@ -492,6 +499,22 @@
                     </select>
                     <span class="field-help">Needs &ldquo;Polish transcripts with AI&rdquo; turned on.</span>
                   </div>
+                </div>
+              </section>
+
+              <section class="card">
+                <div class="card-head">
+                  <h2>Recording</h2>
+                  <p>When BayanFlow decides you have finished speaking.</p>
+                </div>
+
+                <div class="field" data-keywords="silence pause stop timeout thinking auto cut off recording length">
+                  <label class="field-label" for="silenceStopSeconds">Stop after silence (seconds)</label>
+                  <input id="silenceStopSeconds" type="number" min="2" max="30" step="1" placeholder="5" />
+                  <span class="field-help">
+                    Recording ends on its own after this much quiet. Raise it if you pause to think while
+                    dictating longer text. Between 2 and 30 seconds.
+                  </span>
                 </div>
               </section>
 

@@ -31,6 +31,7 @@ const fields = {
   transcriptionTimeoutMs: document.getElementById("transcriptionTimeoutMs"),
   cleanupTimeoutMs: document.getElementById("cleanupTimeoutMs"),
   contextTimeoutMs: document.getElementById("contextTimeoutMs"),
+  silenceStopSeconds: document.getElementById("silenceStopSeconds"),
   preserveExactWording: document.getElementById("preserveExactWording"),
   instructionGuardEnabled: document.getElementById("instructionGuardEnabled"),
   microphoneId: document.getElementById("microphoneId"),
@@ -132,6 +133,7 @@ window.settingsBridge.load().then((config) => {
   setTimeoutField(fields.transcriptionTimeoutMs, config.transcriptionTimeoutMs);
   setTimeoutField(fields.cleanupTimeoutMs, config.cleanupTimeoutMs);
   setTimeoutField(fields.contextTimeoutMs, config.contextTimeoutMs);
+  fields.silenceStopSeconds.value = String(config.silenceStopSeconds || 5);
   fields.preserveExactWording.checked = config.preserveExactWording;
   fields.instructionGuardEnabled.checked = config.instructionGuardEnabled;
   fields.debugCaptureEnabled.checked = config.debugCaptureEnabled;
@@ -183,6 +185,8 @@ document.getElementById("save").addEventListener("click", async () => {
       transcriptionTimeoutMs: readTimeoutField(fields.transcriptionTimeoutMs),
       cleanupTimeoutMs: readTimeoutField(fields.cleanupTimeoutMs),
       contextTimeoutMs: readTimeoutField(fields.contextTimeoutMs),
+      // Clamped again in the main process; this only keeps the box honest.
+      silenceStopSeconds: Number.parseInt(fields.silenceStopSeconds.value, 10) || 5,
       preserveExactWording: fields.preserveExactWording.checked,
       instructionGuardEnabled: fields.instructionGuardEnabled.checked,
       microphoneId: fields.microphoneId.value,
@@ -585,26 +589,43 @@ function renderNavState(localHealth) {
 }
 
 function renderSetupChecklist(config, localHealth) {
+  // Every "done" below is a fact the main process recorded when the step really
+  // succeeded. It used to be inferred from the absence of failure, which ticked
+  // three of four boxes on a machine where nothing had been tried yet.
   const items = [
     {
       done: Boolean(localHealth.hasGroqApiKey),
       title: "Add your Groq API key",
-      copy: "Create one in the Groq console, paste it into Settings, then save.",
+      copy: "Groq accounts are free. Use “Get a free Groq key” in Settings, General, then paste it in and save.",
     },
     {
-      done: !localHealth.lastMicError,
+      done: Boolean(config.didTestMicrophone),
       title: "Test the microphone",
-      copy: "Settings, General, next to the microphone picker. Do it before your first real recording.",
+      copy: localHealth.lastMicError
+        ? `Last test failed: ${localHealth.lastMicError}`
+        : "Settings, General, next to the microphone picker. Do it before your first real recording.",
     },
     {
-      done: Boolean(localHealth.hotkeyAvailable),
+      done: Boolean(config.didDictate),
       title: "Try the dictation hotkey",
-      copy: `Hold ${config.hotkey || "Ctrl+Shift+Space"} in Notepad, say one sentence, release.`,
+      copy: localHealth.hotkeyAvailable
+        ? `Hold ${config.hotkey || "Ctrl+Shift+Space"} in Notepad, say one sentence, release.`
+        : "Hotkey unavailable — another app may already own it. Change it in Settings, Shortcuts.",
     },
     {
-      done: Boolean(config.inputAssistHotkey),
+      done: Boolean(config.didRewrite),
       title: "Try the rewrite hotkey",
       copy: `Type a rough sentence, press ${config.inputAssistHotkey || "Ctrl+Shift+Enter"}, pick Polish.`,
+    },
+    {
+      // Not a task — a disclosure. Both of these are on by default and the only
+      // place that said so was a tab a new user has no reason to open.
+      done: true,
+      title: "Know what is on by default",
+      copy:
+        `History ${config.historyEnabled ? "is saving" : "is not saving"} your dictations on this PC, and ` +
+        `window-title context ${config.contextCaptureEnabled ? "is sent" : "is not sent"} to Groq with each one. ` +
+        "Both are in Settings, Privacy.",
     },
   ];
 
@@ -634,6 +655,13 @@ function renderSetupChecklist(config, localHealth) {
 function renderHealth(config, localHealth) {
   const rows = [
     ["API key", localHealth.hasGroqApiKey ? "Present" : "Missing", localHealth.hasGroqApiKey ? "good" : "warning"],
+    // Silent before: a machine that cannot encrypt wrote the key to config.json
+    // as plain text and told nobody.
+    [
+      "Key storage",
+      localHealth.apiKeyEncrypted === false ? "Plain text — this PC cannot encrypt it" : "Encrypted on this PC",
+      localHealth.apiKeyEncrypted === false ? "warning" : "good",
+    ],
     ["Hotkeys", localHealth.hotkeyAvailable ? "Active" : "Unavailable", localHealth.hotkeyAvailable ? "good" : "warning"],
     [
       "Insertion",
@@ -1177,6 +1205,26 @@ document.getElementById("setupNoticeGo").addEventListener("click", () => {
   showTab("general");
   fields.groqApiKey.focus();
 });
+
+/**
+ * Opens the Groq console in the user's browser.
+ *
+ * It has to go through IPC: hardenWindow denies window.open and blocks
+ * navigation on every BayanFlow window, so a plain link would do nothing. The
+ * main process holds the one URL, so this cannot be pointed anywhere else.
+ */
+async function openGroqConsole() {
+  try {
+    await window.settingsBridge.openGroqConsole();
+    setStatus("Opened console.groq.com in your browser. Create a key, then paste it here.", "success");
+  } catch {
+    setStatus("Could not open the browser. Go to console.groq.com/keys manually.", "error");
+  }
+}
+
+for (const id of ["openGroqConsole", "setupNoticeGetKey"]) {
+  document.getElementById(id)?.addEventListener("click", () => void openGroqConsole());
+}
 
 /** Zero is stored as "unset", and an empty box says that better than a 0. */
 function setTimeoutField(field, value) {
