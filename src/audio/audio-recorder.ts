@@ -1,9 +1,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { createPrefixedId } from "../ids.js";
 import os from "node:os";
 import path from "node:path";
-import { rendererDir } from "../app-paths.js";
-import { BrowserWindow, ipcMain } from "../electron.js";
-import { logger } from "../observability/app-logger.js";
+import { rendererDir, TEMP_AUDIO_DIR_NAME } from "../app-paths.js";
+import { BrowserWindow } from "../electron.js";
+import { hardenWindow } from "../electron-window.js";
+import { IpcHandlerSet } from "../ipc-handler-set.js";
+import { logger } from "../observability/logger.js";
 import { normalizeError } from "../observability/errors.js";
 import type { OperationContext } from "../types.js";
 import {
@@ -26,6 +29,8 @@ export type RecordingLimits = {
   maxAudioBytes: number;
   /** Chosen input device. Empty means whatever the OS considers the default. */
   microphoneId?: string;
+  /** Silence that ends the recording on its own. Zero means the renderer default. */
+  silenceStopMs?: number;
 };
 
 export type AudioInputDevice = {
@@ -58,6 +63,7 @@ export class AudioRecorder {
    */
   private pendingStart: Promise<void> | null = null;
   private readonly session = new RecorderSessionController();
+  private readonly handlers = new IpcHandlerSet();
   private unexpectedErrorHandler: ((error: Error, context: OperationContext) => void | Promise<void>) | null = null;
 
   setUnexpectedErrorHandler(handler: (error: Error, context: OperationContext) => void | Promise<void>): void {
@@ -84,7 +90,7 @@ export class AudioRecorder {
       callback(permission === "media" && webContents.id === this.window?.webContents.id);
     });
 
-    ipcMain.handle("recorder:started", (_event, response: unknown) => {
+    this.handlers.handle("recorder:started", (_event, response: unknown) => {
       this.assertSender(_event.sender.id);
       let payload;
       try {
@@ -97,7 +103,7 @@ export class AudioRecorder {
       this.session.acceptStart(payload.sessionId);
     });
 
-    ipcMain.handle("recorder:stopped", async (_event, response: unknown) => {
+    this.handlers.handle("recorder:stopped", async (_event, response: unknown) => {
       this.assertSender(_event.sender.id);
       let payload;
       try {
@@ -126,7 +132,7 @@ export class AudioRecorder {
       }
     });
 
-    ipcMain.handle("recorder:devices", (_event, response: unknown) => {
+    this.handlers.handle("recorder:devices", (_event, response: unknown) => {
       this.assertSender(_event.sender.id);
       const devices = Array.isArray((response as { devices?: unknown })?.devices)
         ? ((response as { devices: unknown[] }).devices
@@ -138,7 +144,7 @@ export class AudioRecorder {
       this.resolveDevices(devices);
     });
 
-    ipcMain.handle("recorder:error", (_event, response: unknown) => {
+    this.handlers.handle("recorder:error", (_event, response: unknown) => {
       this.assertSender(_event.sender.id);
       let payload;
       try {
@@ -155,7 +161,7 @@ export class AudioRecorder {
       void this.unexpectedErrorHandler?.(error, { sessionId: payload.sessionId });
     });
 
-    ipcMain.handle("recorder:mic-tested", (_event, response: unknown) => {
+    this.handlers.handle("recorder:mic-tested", (_event, response: unknown) => {
       this.assertSender(_event.sender.id);
       let payload;
       try {
@@ -195,7 +201,7 @@ export class AudioRecorder {
       throw new Error("Finish the current recording before testing the microphone.");
     }
 
-    const requestId = createId("mic-test");
+    const requestId = createPrefixedId("mic-test");
     this.activeTestMicRequestId = requestId;
 
     return new Promise((resolve, reject) => {
@@ -285,6 +291,7 @@ export class AudioRecorder {
       maxDurationMs: limits.maxDurationMs,
       maxAudioBytes: limits.maxAudioBytes,
       microphoneId: limits.microphoneId || "",
+      silenceStopMs: limits.silenceStopMs || 0,
     });
 
     this.pendingStart = started.finally(() => this.clearStartTimer());
@@ -328,12 +335,14 @@ export class AudioRecorder {
     this.clearStartTimer();
     this.clearStopTimer();
     this.clearTestMicTimer();
-    this.resolveTestMic({ ok: false, error: "Recorder was closed." } as TestMicResponse);
+    // `message`, not `error`: TestMicResponse has never had an `error` field, and
+    // the `as` cast was hiding that from the compiler. resolveTestMic reads
+    // `message`, so the real reason was replaced by the generic fallback.
+    this.resolveTestMic({ ok: false, message: "Recorder was closed." });
     this.session.reset("Recorder was closed.");
-    ipcMain.removeHandler("recorder:started");
-    ipcMain.removeHandler("recorder:stopped");
-    ipcMain.removeHandler("recorder:error");
-    ipcMain.removeHandler("recorder:mic-tested");
+    // Everything init() registered, including recorder:devices, which the old
+    // hand-written list forgot.
+    this.handlers.removeAll();
     void logger.info("recorder.destroy");
   }
 
@@ -343,7 +352,7 @@ export class AudioRecorder {
       return undefined;
     }
 
-    const dir = path.join(os.tmpdir(), "whispr-clone");
+    const dir = path.join(os.tmpdir(), TEMP_AUDIO_DIR_NAME);
     await mkdir(dir, { recursive: true });
 
     const audioPath = path.join(dir, `dictation-${Date.now()}.webm`);
@@ -391,11 +400,4 @@ export class AudioRecorder {
   }
 }
 
-function createId(prefix: string): string {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
-function hardenWindow(window: InstanceType<typeof BrowserWindow>): void {
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", (event) => event.preventDefault());
-}

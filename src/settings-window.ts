@@ -2,10 +2,15 @@ import path from "node:path";
 import { assetsDir, rendererDir } from "./app-paths.js";
 import { ConfigStore, normalizeConfig } from "./config-store.js";
 import { HistoryStore } from "./history/history-store.js";
-import { BrowserWindow, ipcMain } from "./electron.js";
+import { BrowserWindow, shell } from "./electron.js";
+import { hardenWindow } from "./electron-window.js";
+import { IpcHandlerSet } from "./ipc-handler-set.js";
 import { parseHotkey } from "./hotkey/hotkey-parser.js";
-import { logger } from "./observability/app-logger.js";
+import { logger } from "./observability/logger.js";
 import type { AppConfig } from "./types.js";
+
+/** Where a new user gets their key. The only URL the app will ever open. */
+export const GROQ_CONSOLE_URL = "https://console.groq.com/keys";
 
 export type SettingsHealth = {
   hasGroqApiKey: boolean;
@@ -14,6 +19,8 @@ export type SettingsHealth = {
   lastMicError: string;
   pasteMode: "auto" | "copy";
   logDir: string;
+  /** False when safeStorage is unavailable and the key sits in config.json as text. */
+  apiKeyEncrypted: boolean;
 };
 
 /**
@@ -23,6 +30,7 @@ export type SettingsHealth = {
  */
 export class SettingsWindow {
   private window: InstanceType<typeof BrowserWindow> | null = null;
+  private readonly handlers = new IpcHandlerSet();
 
   constructor(
     private readonly configStore: ConfigStore,
@@ -43,11 +51,11 @@ export class SettingsWindow {
       return;
     }
 
-    ipcMain.handle("settings:list-microphones", (event) => {
+    this.handlers.handle("settings:list-microphones", (event) => {
       this.assertSender(event.sender.id);
       return this.listMicrophones();
     });
-    ipcMain.handle("settings:load", (event) => {
+    this.handlers.handle("settings:load", (event) => {
       this.assertSender(event.sender.id);
       return this.configStore.load().then((config) => ({
         ...config,
@@ -55,7 +63,7 @@ export class SettingsWindow {
         health: this.getHealth(),
       }));
     });
-    ipcMain.handle("settings:save", async (event, config: AppConfig) => {
+    this.handlers.handle("settings:save", async (event, config: AppConfig) => {
       this.assertSender(event.sender.id);
       validateSubmittedHotkey(config.hotkey);
       validateSubmittedHotkey(config.inputAssistHotkey);
@@ -65,6 +73,12 @@ export class SettingsWindow {
         groqApiKey: config.groqApiKey?.trim() ? config.groqApiKey : existingConfig.groqApiKey,
         showDock: typeof config.showDock === "boolean" ? config.showDock : existingConfig.showDock,
         openAtLogin: typeof config.openAtLogin === "boolean" ? config.openAtLogin : existingConfig.openAtLogin,
+        // Onboarding progress is recorded by the main process when a step really
+        // succeeds. The renderer never sends it, so taking it from the form would
+        // reset all three to false on every save.
+        didTestMicrophone: existingConfig.didTestMicrophone,
+        didDictate: existingConfig.didDictate,
+        didRewrite: existingConfig.didRewrite,
       });
       await this.configStore.save(nextConfig);
       await this.onConfigSaved(nextConfig);
@@ -87,11 +101,20 @@ export class SettingsWindow {
     // Read only, and returns null unless debug capture is on. The panel shows
     // exactly what the export writes, so the screen and the file can never
     // disagree when the user sends one over.
-    ipcMain.handle("debug:last-case", (event) => {
+    this.handlers.handle("debug:last-case", (event) => {
       this.assertSender(event.sender.id);
       return this.getLastCase();
     });
-    ipcMain.handle("settings:test-mic", async (event) => {
+    // One hard-coded destination, not an open-any-URL bridge. A general one
+    // would hand a compromised renderer an outbound channel; this one can only
+    // ever reach the page where the user gets their key.
+    this.handlers.handle("app:open-groq-console", async (event) => {
+      this.assertSender(event.sender.id);
+      await shell.openExternal(GROQ_CONSOLE_URL);
+      void logger.info("settings.groq_console.opened");
+      return { ok: true };
+    });
+    this.handlers.handle("settings:test-mic", async (event) => {
       this.assertSender(event.sender.id);
       await this.onTestMicrophone();
       return { ok: true };
@@ -99,15 +122,15 @@ export class SettingsWindow {
 
     // History IPC. Read and delete only: nothing here can write a new entry, so
     // a compromised renderer cannot forge history or reach any other file.
-    ipcMain.handle("history:list", (event) => {
+    this.handlers.handle("history:list", (event) => {
       this.assertSender(event.sender.id);
       return this.historyStore.list();
     });
-    ipcMain.handle("history:stats", (event) => {
+    this.handlers.handle("history:stats", (event) => {
       this.assertSender(event.sender.id);
       return this.historyStore.stats();
     });
-    ipcMain.handle("history:remove", async (event, id: unknown) => {
+    this.handlers.handle("history:remove", async (event, id: unknown) => {
       this.assertSender(event.sender.id);
       if (typeof id !== "string" || !id.trim()) {
         throw new Error("Invalid history id.");
@@ -116,7 +139,7 @@ export class SettingsWindow {
       await this.historyStore.remove(id);
       return { ok: true };
     });
-    ipcMain.handle("history:clear", async (event) => {
+    this.handlers.handle("history:clear", async (event) => {
       this.assertSender(event.sender.id);
       await this.historyStore.clear();
       return { ok: true };
@@ -143,14 +166,9 @@ export class SettingsWindow {
 
     this.window.on("closed", () => {
       this.window = null;
-      ipcMain.removeHandler("settings:list-microphones");
-      ipcMain.removeHandler("settings:load");
-      ipcMain.removeHandler("settings:save");
-      ipcMain.removeHandler("settings:test-mic");
-      ipcMain.removeHandler("history:list");
-      ipcMain.removeHandler("history:stats");
-      ipcMain.removeHandler("history:remove");
-      ipcMain.removeHandler("history:clear");
+      // Every channel this show() registered, and nothing else. Listing them by
+      // hand is what made Settings unopenable after its first close.
+      this.handlers.removeAll();
       void logger.info("settings.closed");
     });
 
@@ -165,10 +183,6 @@ export class SettingsWindow {
   }
 }
 
-function hardenWindow(window: InstanceType<typeof BrowserWindow>): void {
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", (event) => event.preventDefault());
-}
 
 function validateSubmittedHotkey(hotkey: unknown): void {
   if (typeof hotkey !== "string" || !hotkey.trim()) {
