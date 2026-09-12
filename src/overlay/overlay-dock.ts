@@ -1,7 +1,8 @@
 import path from "node:path";
 import { rendererDir } from "../app-paths.js";
 import { BrowserWindow, ipcMain, screen } from "../electron.js";
-import { logger } from "../observability/app-logger.js";
+import { hardenWindow } from "../electron-window.js";
+import { logger } from "../observability/logger.js";
 import {
   DOCK_AUTO_CLEAR_MS,
   DOCK_MIN_HEIGHT,
@@ -17,10 +18,6 @@ import {
   type DockView,
   type Rect,
 } from "./overlay-state.js";
-
-/** Window resize easing. Short enough to feel instant, long enough to read as motion. */
-const DOCK_TWEEN_MS = 150;
-const DOCK_TWEEN_STEP_MS = 16;
 
 export type DockCallbacks = {
   onCancel: () => void;
@@ -55,9 +52,21 @@ export class OverlayDock {
   private clearTimer: NodeJS.Timeout | null = null;
   private ready = false;
   private queuedView: DockView | null = null;
-  private tweenTimer: NodeJS.Timeout | null = null;
   private idleEnabled = true;
   private idleReady = false;
+  /**
+   * Bounds of the window the user is actually typing into, when we know them.
+   *
+   * The display used to be chosen from the mouse pointer, which is right on one
+   * monitor and often wrong on two: a keyboard-driven app is used with the hands,
+   * and the mouse is wherever it was last left. Typing in Slack on the right
+   * screen with the pointer parked on the left put the listening dock — and its
+   * Cancel and Finish buttons — on the monitor the user was not looking at.
+   *
+   * The paste target already carries these bounds, captured one line before the
+   * dock is shown, so the right answer was being thrown away.
+   */
+  private anchorBounds: Rect | null = null;
 
   constructor(private readonly callbacks: DockCallbacks) {}
 
@@ -108,6 +117,14 @@ export class OverlayDock {
     }
 
     void logger.info("dock.init.success", { width: DOCK_WIDTH });
+  }
+
+  /**
+   * Points the next session at the display holding this window.
+   * Pass null when the window is unknown; the pointer is then the best guess left.
+   */
+  setAnchorWindow(bounds: Rect | null | undefined): void {
+    this.anchorBounds = bounds ?? null;
   }
 
   /** Whether the permanent pill is shown when nothing else is happening. */
@@ -225,7 +242,6 @@ export class OverlayDock {
 
   hide(): void {
     this.clearAutoClearTimer();
-    this.stopTween();
     this.view = { kind: "hidden" };
     this.sessionWorkArea = null;
     this.window?.webContents.send("dock:view", this.view);
@@ -243,7 +259,6 @@ export class OverlayDock {
 
   destroy(): void {
     this.clearAutoClearTimer();
-    this.stopTween();
     this.window?.destroy();
     this.window = null;
     this.ready = false;
@@ -274,7 +289,7 @@ export class OverlayDock {
       //
       // Every other view animates as before: those resizes happen once, at a
       // moment the user is already looking at the dock.
-      this.applyBounds(this.view.kind !== "idle");
+      this.applyBounds();
     });
 
     ipcMain.handle("dock:command", async (event, name: unknown, payload: unknown) => {
@@ -334,64 +349,24 @@ export class OverlayDock {
   /**
    * The only place window geometry is decided. One formula, no branches.
    *
-   * `animate` eases the window between two sizes instead of jumping. Electron's
-   * own `setBounds(bounds, animate)` flag is macOS-only, so the tween is manual.
-   * Content-driven resizes animate; the first placement of a new view does not,
-   * so the dock still appears instantly when you press the hotkey.
+   * There used to be a hand-written tween here — a 16ms setInterval with cubic
+   * easing — because Electron's own `setBounds` animate flag is macOS-only. It
+   * was removed. Animating this window means dozens of setBounds calls on an
+   * always-on-top window, and that churn disturbs the focus of the app the user
+   * is typing into, which is the one thing this window must never do. It had
+   * already been switched off for the idle pill after exactly that bug; the
+   * remaining views were animating a 150ms resize nobody was looking at.
+   *
+   * The dock's contents still animate, in CSS, where it costs nothing.
    */
-  private applyBounds(animate = false): void {
+  private applyBounds(): void {
     if (!this.window) {
       return;
     }
 
     const workArea = this.workAreaForSession();
     const size = clampDockSize(this.lastSize, workArea);
-    const target = dockBounds(size, workArea);
-    this.stopTween();
-
-    if (!animate || !this.window.isVisible()) {
-      this.window.setBounds(target, false);
-      return;
-    }
-
-    const start = this.window.getBounds();
-    if (start.width === target.width && start.height === target.height) {
-      this.window.setBounds(target, false);
-      return;
-    }
-
-    const startedAt = Date.now();
-    this.tweenTimer = setInterval(() => {
-      if (!this.window) {
-        this.stopTween();
-        return;
-      }
-
-      const progress = Math.min(1, (Date.now() - startedAt) / DOCK_TWEEN_MS);
-      const eased = 1 - (1 - progress) ** 3;
-      this.window.setBounds(
-        {
-          x: Math.round(start.x + (target.x - start.x) * eased),
-          y: Math.round(start.y + (target.y - start.y) * eased),
-          width: Math.round(start.width + (target.width - start.width) * eased),
-          height: Math.round(start.height + (target.height - start.height) * eased),
-        },
-        false,
-      );
-
-      if (progress >= 1) {
-        this.stopTween();
-      }
-    }, DOCK_TWEEN_STEP_MS);
-  }
-
-  private stopTween(): void {
-    if (!this.tweenTimer) {
-      return;
-    }
-
-    clearInterval(this.tweenTimer);
-    this.tweenTimer = null;
+    this.window.setBounds(dockBounds(size, workArea), false);
   }
 
   /**
@@ -404,7 +379,7 @@ export class OverlayDock {
       return this.sessionWorkArea;
     }
 
-    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const display = screen.getDisplayNearestPoint(this.anchorPoint());
     this.sessionWorkArea = {
       x: display.workArea.x,
       y: display.workArea.y,
@@ -412,6 +387,22 @@ export class OverlayDock {
       height: display.workArea.height,
     };
     return this.sessionWorkArea;
+  }
+
+  /**
+   * The point that decides which display the dock belongs on: the centre of the
+   * window being typed into, or the pointer when there is no such window.
+   */
+  private anchorPoint(): { x: number; y: number } {
+    const bounds = this.anchorBounds;
+    if (bounds && bounds.width > 0 && bounds.height > 0) {
+      return {
+        x: Math.round(bounds.x + bounds.width / 2),
+        y: Math.round(bounds.y + bounds.height / 2),
+      };
+    }
+
+    return screen.getCursorScreenPoint();
   }
 
   private clearAutoClearTimer(): void {
@@ -469,7 +460,3 @@ function normalizeRecoveryAction(payload: unknown): DockRecoveryAction | null {
   return allowed.find((action) => action === payload) ?? null;
 }
 
-function hardenWindow(window: InstanceType<typeof BrowserWindow>): void {
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", (event) => event.preventDefault());
-}
