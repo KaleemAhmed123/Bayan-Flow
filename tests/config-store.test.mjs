@@ -138,3 +138,30 @@ test("timeouts default to zero and reject nonsense", () => {
   assert.equal(messy.cleanupTimeoutMs, 0, "a negative timeout means use the default");
   assert.equal(messy.contextTimeoutMs, 30_000);
 });
+
+test("silence stop seconds is clamped to a sane range", () => {
+  // The default must survive a config that predates the setting.
+  assert.equal(normalizeConfig({}).silenceStopSeconds, 5);
+  assert.equal(normalizeConfig({ silenceStopSeconds: 12 }).silenceStopSeconds, 12);
+  // Too short clips the gap between sentences; too long leaves the mic open
+  // after the user has walked away.
+  assert.equal(normalizeConfig({ silenceStopSeconds: 1 }).silenceStopSeconds, 2);
+  assert.equal(normalizeConfig({ silenceStopSeconds: 300 }).silenceStopSeconds, 30);
+  assert.equal(normalizeConfig({ silenceStopSeconds: 7.6 }).silenceStopSeconds, 8);
+  // Junk falls back rather than disabling the auto-stop entirely.
+  assert.equal(normalizeConfig({ silenceStopSeconds: "ten" }).silenceStopSeconds, 5);
+  assert.equal(normalizeConfig({ silenceStopSeconds: 0 }).silenceStopSeconds, 5);
+});
+
+test("onboarding flags default to not-done and survive a round trip", () => {
+  // The checklist used to infer these; a fresh config must claim nothing is done.
+  const fresh = normalizeConfig({});
+  assert.equal(fresh.didTestMicrophone, false);
+  assert.equal(fresh.didDictate, false);
+  assert.equal(fresh.didRewrite, false);
+
+  const used = normalizeConfig({ didTestMicrophone: true, didDictate: true });
+  assert.equal(used.didTestMicrophone, true);
+  assert.equal(used.didDictate, true);
+  assert.equal(used.didRewrite, false);
+});
