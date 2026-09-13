@@ -1134,3 +1134,104 @@ npm run local:smoke -> PASS
 **Not verified live:** no five-minute dictation was actually performed. The rejection string in the tests
 is the real one from your log, and the arithmetic is checked, but a genuine long dictation on the new
 build is the confirmation.
+
+### 2026-09-12 — auto-updater (Tier 3 #32), and a re-verification of launch blockers
+
+#### It works, and it is proven working
+
+The updater is wired to GitHub Releases. The repository is public, so no token ships inside the app and
+the check is an anonymous HTTPS request. Verified by running the **packaged** binary for 60 seconds:
+
+```txt
+"event":"updater.checking"
+"event":"updater.check_failed" ... Cannot find latest.yml in the latest release artifacts
+  (https://github.com/KaleemAhmed123/Bayan-Flow/releases/download/v0.1.0/latest.yml): HttpError: 404
+```
+
+That is the correct outcome today: the update path reaches GitHub, resolves the newest release, and 404s
+only because **v0.1.0 predates the updater and has no `latest.yml` asset**. The failure was caught,
+logged as a warning, and the app carried on running. GitHub's "double check your authentication token"
+wording in that error is its generic 404 text, not an auth problem.
+
+Behaviour: first check 45s after launch (never competing with the first dictation), then every 6 hours.
+Auto-download on, install on quit. A "restart to update" message is suppressed while a dictation or
+rewrite is in flight — telling somebody mid-sentence to restart is the interruption this app exists to
+avoid. Tray gains a version line, "Check for updates", and "Restart to update to X" when one is waiting.
+
+#### Three packaging traps, all found by verification rather than reasoning
+
+**1. The app would not start at all.** `import { autoUpdater } from "electron-updater"` throws in the
+packaged build:
+
+```txt
+SyntaxError: Named export 'autoUpdater' not found. The requested module 'electron-updater'
+is a CommonJS module, which may not support all module.exports as named exports.
+```
+
+The bundle is ESM and electron-updater is external CommonJS. It works in dev and dies when packaged, so
+only `npm run packaged:smoke` caught it — `npm run build`, 292 unit tests and `local:smoke` were all
+green with the app fatally broken. Fixed by unwrapping the interop default, the same thing
+`src/electron.ts` already does for `electron` itself.
+
+**2. Every update would have 404'd.** `latest.yml` refers to the installer by name, and
+electron-builder's default artifact name has spaces (`BayanFlow Setup 0.2.0.exe`) while the manifest
+asks for hyphens (`BayanFlow-Setup-0.2.0.exe`). A hand-uploaded release would never be found. Fixed with
+`artifactName: "${productName}-Setup-${version}.${ext}"`, and confirmed the two now match.
+
+**3. `verifyUpdateCodeSignature` defaults to true** and would reject every update: it compares the
+downloaded installer's Authenticode signature against a publisher name, and this build is unsigned. Set
+to false explicitly, next to a comment saying to turn it back on when signing lands.
+
+Also worth knowing: **`npm run pack` does not generate `app-update.yml`; `npm run dist` does.** Testing
+the updater against a `--dir` build tests nothing.
+
+#### Publishing is now a deliberate act
+
+`npm run dist` is `--publish never`, so a local build can never push a release by accident.
+`npm run release` is `--publish always`. Publishing needs a token in the environment:
+
+```powershell
+$env:GH_TOKEN = gh auth token; npm run release
+```
+
+Your `gh` login already carries the `repo` scope this needs.
+
+#### Launch blockers, re-verified
+
+Every previously fixed blocker was re-checked against the current tree, not assumed:
+
+```txt
+B1  settings reopens (handler set)        OK
+B3  groq console button                   OK
+B4  native load failure dialog            OK
+B5  honest checklist                      OK
+B8  privacy row on home                   OK
+B23 esc alias                             OK
+    failed audio retained for retry       OK
+    17 IPC channels, all via handler set  OK
+```
+
+**Remaining blocker for auto-update specifically: there is no published release carrying `latest.yml`.**
+Until `npm run release` runs once, every client will 404 exactly as observed above. It fails safely, but
+it does not update.
+
+**New standing risk:** an update installs an unsigned installer with signature verification disabled.
+The protection is HTTPS to GitHub plus the SHA-512 in the manifest. Acceptable among friends; not
+acceptable for public distribution. Sign the builds and re-enable verification before going wider.
+
+#### Verification
+
+```txt
+npm run build          -> exit 0 (590 KB)
+npm test               -> tests 299 | pass 299 | fail 0
+npm run local:smoke    -> PASS
+npm run dist           -> exit 0, BayanFlow-Setup-0.2.0.exe + latest.yml
+npm run packaged:smoke -> PASS
+npm audit --omit=dev   -> 0 vulnerabilities (electron-updater adds none)
+60s packaged run       -> updater.checking fired, 404 handled, app stayed up
+```
+
+292 → 299. The seven new tests are static guards on exactly the traps above, because each one is
+invisible to the unit suite: the named-import form is banned, `electron-updater` must stay a runtime
+dependency and stay external to the bundle, the artifact name must match the manifest, signing flags
+must agree with each other, and publishing must stay off the `dist` script.
