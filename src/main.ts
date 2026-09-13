@@ -44,6 +44,7 @@ import {
   type RewriteActionId,
 } from "./rewrite/rewrite-actions.js";
 import { SettingsWindow } from "./settings-window.js";
+import { check as checkForUpdates, installNow, pendingUpdateVersion, startUpdater, stopUpdater } from "./updater.js";
 import { GroqTranscriptionService } from "./transcription/groq-transcription-service.js";
 import type { AppConfig, DictationResult, OperationContext, RuntimeState } from "./types.js";
 import type { AppContextSnapshot } from "./context/context-rules.js";
@@ -332,7 +333,15 @@ app.whenReady()
       pendingSecondInstanceNotice = false;
       await showAlreadyRunningNotice();
     }
-    void logger.info("app.startup.success", { hotkey: config.hotkey, logDir });
+    startUpdater({
+      onReady: (version) => {
+        showDone(`Update ${version} ready · quit to install`, "ok", false);
+        refreshTray();
+      },
+      // Never interrupt someone mid-sentence with a restart prompt.
+      isBusy: () => isRecording || isProcessing || rewriteInFlight,
+    });
+    void logger.info("app.startup.success", { hotkey: config.hotkey, logDir, version: app.getVersion() });
   })
   .catch((error) => {
     const normalized = normalizeError("startup", error);
@@ -348,6 +357,7 @@ app.on("will-quit", () => {
   hotkeySuppressor.release();
   clearRecordingLimitTimer();
   clearDockSnooze();
+  stopUpdater();
   // Best effort: the audio must not outlive the session that produced it.
   void discardFailedAudio();
   recorder.destroy();
@@ -564,6 +574,17 @@ function updateTrayMenu(settingsWindow: SettingsWindow): void {
       ...(config.debugCaptureEnabled
         ? [{ label: "Export last dictation for debugging", click: () => void exportDebugCase() }]
         : []),
+      { type: "separator" },
+      ...(pendingUpdateVersion()
+        ? [
+            {
+              label: `Restart to update to ${pendingUpdateVersion()}`,
+              click: () => installNow(),
+            },
+          ]
+        : [{ label: "Check for updates", click: () => void checkForUpdatesFromMenu() }]),
+      { label: `Version ${app.getVersion()}`, enabled: false },
+      { type: "separator" },
       { label: "Settings", click: () => void settingsWindow.show() },
       { label: "Open Logs Folder", click: () => void openLogsFolder() },
       { label: "Export Diagnostics", click: () => void exportDiagnosticsSafely() },
@@ -1627,6 +1648,31 @@ function getRewriteProvider(nextConfig: AppConfig): GroqRewriteProvider {
 
 function createTrayIcon() {
   return nativeImage.createFromPath(path.join(assetsDir, "tray-icon.ico"));
+}
+
+/**
+ * "Check for updates" from the tray.
+ *
+ * The background check is deliberately silent, but a check the user asked for
+ * has to answer them — a menu item that appears to do nothing reads as broken.
+ */
+async function checkForUpdatesFromMenu(): Promise<void> {
+  if (!app.isPackaged) {
+    showDone("Updates only work in the installed app", "warn", false);
+    return;
+  }
+
+  showWorking("Checking for updates");
+  await checkForUpdates();
+  refreshTray();
+
+  if (pendingUpdateVersion()) {
+    showDone(`Update ${pendingUpdateVersion()} ready · quit to install`, "ok", false);
+    return;
+  }
+
+  // A download that is still running will announce itself when it finishes.
+  showDone(`BayanFlow ${app.getVersion()} is up to date`, "ok", false);
 }
 
 async function openLogsFolder(): Promise<void> {
