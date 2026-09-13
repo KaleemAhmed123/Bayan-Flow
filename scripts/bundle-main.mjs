@@ -10,7 +10,9 @@ const stub = path.resolve("scripts/empty-module.js");
  * and libnut-win32 through bindings("libnut"). Both walk the filesystem from
  * their own directory, so inlining their JS into dist/ breaks that lookup.
  */
-const external = ["electron", "uiohook-napi", "@nut-tree-fork/libnut-win32"];
+// electron-updater joins these: it lazy-requires js-yaml and builder-util-runtime
+// and reads its own package.json at runtime, none of which survives inlining.
+const external = ["electron", "electron-updater", "uiohook-napi", "@nut-tree-fork/libnut-win32"];
 
 /**
  * Reachable from nut-js's require graph, never called by BayanFlow.
