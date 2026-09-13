@@ -18,11 +18,13 @@
     "audit:prod": "npm audit --omit=dev",
     "local:smoke": "npm run build && node scripts/smoke-local.mjs",
     "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
-    "packaged:smoke": "node scripts/smoke-packaged.mjs"
+    "dist": "npm run build && electron-builder --publish never",
+    "packaged:smoke": "node scripts/smoke-packaged.mjs",
+    "release": "npm run build && electron-builder --publish always"
   },
   "dependencies": {
     "@nut-tree-fork/libnut-win32": "2.7.5",
+    "electron-updater": "^6.8.9",
     "uiohook-napi": "^1.5.5"
   },
   "devDependencies": {
@@ -74,7 +76,8 @@
       "icon": "src/assets/tray-icon.ico",
       "legalTrademarks": "BayanFlow",
       "executableName": "BayanFlow",
-      "signExecutable": false
+      "signExecutable": false,
+      "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "installerIcon": "src/assets/tray-icon.ico",
@@ -92,6 +95,13 @@
       "createStartMenuShortcut": true,
       "shortcutName": "BayanFlow"
     },
-    "publish": null
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "KaleemAhmed123",
+        "repo": "Bayan-Flow"
+      }
+    ],
+    "artifactName": "${productName}-Setup-${version}.${ext}"
   }
 }
