@@ -83,7 +83,7 @@ body {
   grid-template-columns: auto;
   align-items: center;
   gap: var(--bf-space-1);
-  padding: 3px;
+  padding: 4px;
 }
 
 .dock[data-view="idle"][data-hover="true"] .pill {
@@ -123,7 +123,8 @@ body {
 
 .pill-core {
   display: flex;
-  height: 26px;
+  /* Matches .btn-quiet so the core and the side buttons share one baseline. */
+  height: 30px;
   align-items: center;
   gap: 7px;
   border: 0;
@@ -131,7 +132,7 @@ body {
   background: transparent;
   color: var(--bf-text-muted);
   cursor: pointer;
-  padding: 0 11px;
+  padding: 0 13px;
   transition: background var(--bf-fast) var(--bf-ease);
 }
 
@@ -176,12 +177,16 @@ body {
 
 /* ---------- single-line states: listening, working, done, error ---------- */
 
+/*
+ * 44px is not a taste number: a 32px control plus 6px of padding either side is
+ * exactly 44. The old 52px left 8px of air that nothing occupied.
+ */
 .bar {
   display: flex;
-  min-height: 52px;
+  min-height: 44px;
   align-items: center;
   gap: var(--bf-space-3);
-  padding: var(--bf-space-2) var(--bf-space-3);
+  padding: 6px var(--bf-space-3);
 }
 
 .bar-error {
@@ -218,11 +223,17 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * tabular-nums already stops the digits shifting width; the mono face is a
+ * style choice on top of that, not a fix. Elapsed time is data, so it is set
+ * like data.
+ */
 .timer {
   color: var(--bf-text-muted);
+  font-family: var(--bf-font-mono);
   font-size: var(--bf-size-sm);
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.01em;
 }
 
 .dot {
@@ -341,11 +352,18 @@ body {
 
 /* Borderless variant used inside the pill, where a border on every control
    would read as clutter at that size. */
+/*
+ * Roomier than the panel controls on purpose. The chips were tightened because
+ * eight of them share one small panel; the pill is five controls floating on an
+ * otherwise empty desktop, and it read as cramped at 26px with 12px text.
+ */
 .btn-quiet {
-  min-height: 26px;
+  min-height: 30px;
+  padding: 0 12px;
   border-color: transparent;
   background: transparent;
   color: var(--bf-text-muted);
+  font-size: var(--bf-size-md);
   font-weight: 550;
 }
 
@@ -356,7 +374,8 @@ body {
 }
 
 .btn-quiet.btn-icon {
-  width: 26px;
+  width: 30px;
+  padding: 0;
 }
 
 .btn-primary {
@@ -375,8 +394,8 @@ body {
 .panel {
   display: flex;
   flex-direction: column;
-  gap: var(--bf-space-2);
-  padding: var(--bf-space-3);
+  gap: 6px;
+  padding: 10px;
 }
 
 .panel-head {
@@ -398,7 +417,7 @@ body {
 .action-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
 }
 
 .action-grid .btn {
@@ -406,10 +425,14 @@ body {
 }
 
 /*
- * Compact buttons pay for the fourth column. Height stays at var(--bf-hit):
- * the padding and the label shrink, the click target does not.
+ * Compact buttons pay for the fourth column. These are the ONLY controls that go
+ * under var(--bf-hit), and it is a deliberate trade: eight of them in two rows is
+ * where the panel's height actually goes. 28px is still above the WCAG 2.2
+ * target-size minimum of 24px. Every standalone button keeps the full 32px.
+ * ponytail: if a chip ever proves fiddly to hit, raise this one value to 30px.
  */
 .btn-compact {
+  min-height: 28px;
   gap: 4px;
   overflow: hidden;
   padding: 0 6px;
