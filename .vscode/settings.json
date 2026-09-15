@@ -1,0 +1,23 @@
+{
+  // VS Code watches and indexes everything in the workspace, including build
+  // output. That means it holds open handles on release/win-unpacked/**, and on
+  // Windows an open handle makes the file undeletable — so the next
+  // `electron-builder` run fails with:
+  //
+  //   EBUSY: resource busy or locked, unlink '...\release\win-unpacked\resources\app.asar'
+  //
+  // Excluding the generated directories stops VS Code taking those handles at
+  // all. Nothing here is source; both directories are rebuilt from scratch.
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/dist/**": true,
+    "**/release/**": true,
+    "**/.playwright-mcp/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/release": true,
+    "**/.playwright-mcp": true
+  }
+}
