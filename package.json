@@ -1,6 +1,6 @@
 {
   "name": "bayanflow",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Windows-first AI dictation MVP with Groq transcription and cleanup.",
   "author": "BayanFlow",
   "main": "dist/main.cjs",
