@@ -90,6 +90,87 @@
 
       <main class="content" id="content">
         <!-- ---------------- Home ---------------- -->
+        <!--
+          First run. Replaces Home entirely until setup is done, then never
+          appears again. There is no new window and no new IPC here: main.ts
+          already opens this window when there is no API key, and every control
+          below is the same control the Settings tabs use. The point is that each
+          step CONTAINS its control rather than describing where to find it.
+        -->
+        <section class="page" id="page-firstrun" hidden>
+          <header class="page-head">
+            <div>
+              <h1>Set up BayanFlow</h1>
+              <p class="page-sub">Three steps. About a minute.</p>
+            </div>
+          </header>
+
+          <ol class="steprail" id="stepRail">
+            <li data-step="key"><span class="steprail-dot">1</span><span class="steprail-label">Key</span></li>
+            <li data-step="mic"><span class="steprail-dot">2</span><span class="steprail-label">Microphone</span></li>
+            <li data-step="say"><span class="steprail-dot">3</span><span class="steprail-label">Say something</span></li>
+          </ol>
+
+          <section class="card step" id="step-key" hidden>
+            <div class="card-head">
+              <h2>Add your Groq API key</h2>
+              <p>BayanFlow sends your audio to Groq to transcribe it. Accounts are free, and nothing works until this is set.</p>
+            </div>
+
+            <div class="byok">
+              <span class="byok-tag">Bring your own key &middot; BYOK</span>
+              <p>
+                This is why there is no sign-up and no subscription. BayanFlow runs on
+                <strong>your own Groq account</strong>, so nothing is proxied through a server of ours
+                &mdash; your key stays encrypted on this PC and is sent only to Groq.
+              </p>
+            </div>
+            <div class="field">
+              <label for="fr_apiKey">Groq API key</label>
+              <input id="fr_apiKey" type="password" placeholder="gsk_..." autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="step-actions">
+              <button class="btn" id="fr_getKey" type="button">Get a free key</button>
+              <span class="spacer"></span>
+              <span class="step-note" id="fr_keyNote"></span>
+              <button class="btn btn-primary" id="fr_saveKey" type="button">Save and continue</button>
+            </div>
+          </section>
+
+          <section class="card step" id="step-mic" hidden>
+            <div class="card-head">
+              <h2>Pick your microphone</h2>
+              <p>Test it now, so your first real dictation is not also the test.</p>
+            </div>
+            <div class="field">
+              <label for="fr_microphone">Input device</label>
+              <select id="fr_microphone"></select>
+            </div>
+            <div class="step-actions">
+              <button class="btn" id="fr_testMic" type="button">Test microphone</button>
+              <span class="spacer"></span>
+              <span class="step-note" id="fr_micNote"></span>
+              <button class="btn btn-primary" id="fr_micNext" type="button">Continue</button>
+            </div>
+          </section>
+
+          <section class="card step" id="step-say" hidden>
+            <div class="card-head">
+              <h2>Say one sentence</h2>
+              <p>Click into the box below, then hold the keys and talk. Let go and your words land where the cursor is.</p>
+            </div>
+            <div class="keycaps" id="fr_keycaps"></div>
+            <input id="fr_target" type="text" placeholder="Your words will land here..." autocomplete="off" />
+            <div class="step-actions">
+              <span class="step-waiting" id="fr_sayNote"><span class="dot"></span>Waiting for your first dictation...</span>
+              <span class="spacer"></span>
+              <button class="btn btn-primary" id="fr_finish" type="button">Finish setup</button>
+            </div>
+          </section>
+
+          <button class="linklike" id="fr_skip" type="button">Skip setup and go to the app</button>
+        </section>
+
         <section class="page" id="page-home">
           <header class="page-head">
             <div>
@@ -106,12 +187,49 @@
 
           <div class="tiles" id="homeTiles"></div>
 
+          <!--
+            A standing statement, not a task. History and window-title context are
+            both ON by default, and the only place that said so used to be a tick
+            in the setup checklist, which made a disclosure look like something the
+            user had achieved.
+          -->
+          <section class="disclosure" id="homeDisclosure">
+            <span class="disclosure-icon" aria-hidden="true">i</span>
+            <p id="homeDisclosureText"></p>
+            <button class="btn btn-small" id="homeDisclosureGo" type="button">Privacy settings</button>
+          </section>
+
+          <!--
+            Collapses to its summary once every step is done. A permanently
+            expanded setup card is the largest thing on Home for someone who
+            finished setting up weeks ago.
+          -->
+          <section class="card card-flush">
+            <details class="collapsible" id="setupDetails">
+              <summary class="card-head collapsible-head">
+                <div>
+                  <h2>Get started</h2>
+                  <p id="setupProgress"></p>
+                </div>
+                <span class="collapsible-chevron" aria-hidden="true"></span>
+              </summary>
+              <ol class="checklist" id="setupChecklist"></ol>
+            </details>
+          </section>
+
+          <!--
+            Live state for this install. It used to be a sticky 280px rail on the
+            Settings page, which squeezed the form into less than half the window.
+            "Is it working?" is a Home question, so it lives here now and Settings
+            gets the full width. It sits above "How to use it" because "is it
+            working" is checked often and "how does it work" is read once.
+          -->
           <section class="card">
             <div class="card-head">
-              <h2>Get started</h2>
-              <p>Four steps, once.</p>
+              <h2>Status</h2>
+              <p>Live state for this install.</p>
             </div>
-            <ol class="checklist" id="setupChecklist"></ol>
+            <ul class="health" id="health"></ul>
           </section>
 
           <section class="card">
@@ -124,20 +242,6 @@
               <li><kbd id="howRewrite">Ctrl+Shift+Enter</kbd><span>Rewrite whatever is in the box you are typing in. Every action is on screen at once.</span></li>
             </ul>
           </section>
-
-          <!--
-            Live state for this install. It used to be a sticky 280px rail on the
-            Settings page, which squeezed the form into less than half the window.
-            "Is it working?" is a Home question, so it lives here now and Settings
-            gets the full width.
-          -->
-          <section class="card">
-            <div class="card-head">
-              <h2>Status</h2>
-              <p>Live state for this install.</p>
-            </div>
-            <ul class="health" id="health"></ul>
-          </section>
         </section>
 
         <!-- ---------------- History ---------------- -->
@@ -145,15 +249,14 @@
           <header class="page-head">
             <div>
               <h1>History</h1>
-              <p class="page-sub">Every dictation, what you said and what was inserted. Stored on this PC only.</p>
+              <p class="page-sub">Every dictation, what you said and what was inserted. Never uploaded.</p>
             </div>
-            <span class="spacer"></span>
-            <button class="btn btn-danger" id="historyClear" type="button">Clear all</button>
           </header>
 
           <div class="toolbar">
             <input id="historySearch" type="search" placeholder="Search your dictations" autocomplete="off" />
             <span class="toolbar-count" id="historyCount"></span>
+            <button class="btn btn-danger" id="historyClear" type="button">Clear all</button>
           </div>
 
           <div class="history-list" id="historyList"></div>
@@ -304,6 +407,16 @@
                 <div class="card-head">
                   <h2>Connection</h2>
                   <p>Your key is stored on this machine and is only ever sent to Groq.</p>
+                </div>
+
+                <div class="byok" data-keywords="byok bring your own key subscription account billing provider">
+                  <span class="byok-tag">Bring your own key &middot; BYOK</span>
+                  <p>
+                    You run BayanFlow on <strong>your own Groq account</strong>, not ours. There is no
+                    BayanFlow server in the middle and no subscription &mdash; your key is encrypted on
+                    this PC and talks straight to Groq. Change provider or revoke the key any time and
+                    the app follows.
+                  </p>
                 </div>
 
                 <div class="field" data-keywords="groq api key token credential account console signup free">

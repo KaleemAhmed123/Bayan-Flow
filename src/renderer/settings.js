@@ -62,6 +62,7 @@ let statusTimer = null;
 /* ---------------- navigation ---------------- */
 
 const pages = {
+  firstrun: document.getElementById("page-firstrun"),
   home: document.getElementById("page-home"),
   history: document.getElementById("page-history"),
   stats: document.getElementById("page-stats"),
@@ -147,7 +148,9 @@ window.settingsBridge.load().then((config) => {
   fields.openAtLogin.checked = config.openAtLogin;
 
   setupNotice.hidden = Boolean(localHealth.hasGroqApiKey);
+  renderDisclosure(config);
   renderSetupChecklist(config, localHealth);
+  startFirstRun(config, localHealth);
   renderHealth(config, localHealth);
   renderHomeHotkeys(config);
   renderNavState(localHealth);
@@ -474,6 +477,8 @@ function renderStatTiles(stats) {
 }
 
 function renderTiles(target, rows) {
+  // Read by .tiles in CSS: six tiles need a wider track or they wrap 4 + 2.
+  target.dataset.count = String(rows.length);
   target.replaceChildren(
     ...rows.map(([label, value, note]) => {
       const tile = document.createElement("div");
@@ -511,21 +516,34 @@ function renderChart(activity) {
       column.className = "chart-col";
       column.title = `${day.date}: ${day.words} words`;
 
+      // Zero days keep a 2% stub so the baseline is visible and clickable.
+      const height = Math.max(2, Math.round((day.words / peak) * 100));
+
       const bar = document.createElement("div");
       bar.className = "chart-bar";
-      // Zero days keep a 2% stub so the baseline is visible and clickable.
-      bar.style.height = `${Math.max(2, Math.round((day.words / peak) * 100))}%`;
+      bar.style.height = `${height}%`;
       bar.dataset.empty = day.words === 0 ? "true" : "false";
 
-      const value = document.createElement("span");
-      value.className = "chart-value";
-      value.textContent = day.words > 0 ? formatNumber(day.words) : "";
+      // The plot holds the value and the bar together and pushes both to the
+      // baseline, so the number sits on its own bar instead of at the ceiling.
+      const plot = document.createElement("div");
+      plot.className = "chart-plot";
+
+      // Below roughly a fifth of the chart there is no room for a number above
+      // the bar without it colliding with the neighbouring column's bar.
+      if (day.words > 0 && height >= 18) {
+        const value = document.createElement("span");
+        value.className = "chart-value";
+        value.textContent = formatNumber(day.words);
+        plot.append(value);
+      }
+      plot.append(bar);
 
       const label = document.createElement("span");
       label.className = "chart-label";
       label.textContent = weekdayLabel(day.date);
 
-      column.append(value, bar, label);
+      column.append(plot, label);
       return column;
     }),
   );
@@ -588,6 +606,27 @@ function renderNavState(localHealth) {
       : "API key needed";
 }
 
+/*
+ * A standing statement about what the app is doing right now, phrased in the
+ * present tense and always visible. It used to be the fifth item in the setup
+ * checklist wearing a green tick, which framed a disclosure as an achievement.
+ */
+function renderDisclosure(config) {
+  const text = document.getElementById("homeDisclosureText");
+  if (!text) {
+    return;
+  }
+
+  const stored = config.historyEnabled
+    ? "Your dictations are being saved on this PC"
+    : "Your dictations are not being saved";
+  const sent = config.contextCaptureEnabled
+    ? "the name and title of the window you type into is sent to Groq with each one"
+    : "nothing about the window you type into is sent";
+
+  text.textContent = `${stored}, and ${sent}.`;
+}
+
 function renderSetupChecklist(config, localHealth) {
   // Every "done" below is a fact the main process recorded when the step really
   // succeeded. It used to be inferred from the absence of failure, which ticked
@@ -617,17 +656,24 @@ function renderSetupChecklist(config, localHealth) {
       title: "Try the rewrite hotkey",
       copy: `Type a rough sentence, press ${config.inputAssistHotkey || "Ctrl+Shift+Enter"}, pick Polish.`,
     },
-    {
-      // Not a task — a disclosure. Both of these are on by default and the only
-      // place that said so was a tab a new user has no reason to open.
-      done: true,
-      title: "Know what is on by default",
-      copy:
-        `History ${config.historyEnabled ? "is saving" : "is not saving"} your dictations on this PC, and ` +
-        `window-title context ${config.contextCaptureEnabled ? "is sent" : "is not sent"} to Groq with each one. ` +
-        "Both are in Settings, Privacy.",
-    },
   ];
+
+  // The count is read off the list. The subtitle used to say "Four steps" beside
+  // five items, because the number was typed in and the list grew.
+  const done = items.filter((item) => item.done).length;
+  const progress = document.getElementById("setupProgress");
+  const details = document.getElementById("setupDetails");
+  if (progress) {
+    progress.textContent =
+      done === items.length
+        ? `Setup complete · ${done} of ${items.length}`
+        : `${done} of ${items.length} done`;
+  }
+  // Open while there is something left to do; a finished checklist collapses to
+  // one line instead of staying the largest card on the page forever.
+  if (details && !details.dataset.userToggled) {
+    details.open = done < items.length;
+  }
 
   setupChecklist.replaceChildren();
   for (const item of items) {
@@ -1029,7 +1075,7 @@ const saveState = document.getElementById("saveState");
 
 const tabButtons = Array.from(settingsTabs.querySelectorAll(".tab"));
 const panelNodes = Array.from(settingsPanels.querySelectorAll(".panel"));
-const searchRows = Array.from(settingsPanels.querySelectorAll(".field, .toggle"));
+const searchRows = Array.from(settingsPanels.querySelectorAll(".field, .toggle, .byok"));
 const searchCards = Array.from(settingsPanels.querySelectorAll(".card"));
 
 /** The tab to return to when the search box is cleared. */
@@ -1117,7 +1163,9 @@ function applySettingsSearch() {
     for (const card of panel.querySelectorAll(".card")) {
       let cardHits = 0;
 
-      for (const row of card.querySelectorAll(".field, .toggle")) {
+      // .byok is a row too. If it is left out, search hides every real row in
+      // the Connection card and leaves the note floating there on its own.
+      for (const row of card.querySelectorAll(".field, .toggle, .byok")) {
         const haystack = `${row.textContent} ${row.dataset.keywords || ""}`.toLowerCase();
         const hit = haystack.includes(query);
         row.hidden = !hit;
@@ -1235,3 +1283,222 @@ function readTimeoutField(field) {
   const parsed = Number.parseInt(field.value.trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
+
+/* ---------------- first run ----------------
+ *
+ * Replaces Home until setup is done, then never appears again. There is no new
+ * window and no new IPC: main.ts already opens this window when there is no API
+ * key, and every control below drives the SAME field the Settings tabs drive,
+ * then clicks the same Save button. That is deliberate — a second save path is a
+ * second place for validation to drift.
+ *
+ * Step 3 polls. `didDictate` is flipped in the main process when a dictation
+ * really succeeds, and there is no push channel to the renderer, so the only way
+ * to notice is to re-read the config. It polls only while step 3 is on screen
+ * and stops the moment it advances or the user leaves.
+ */
+
+const FIRST_RUN_STEPS = ["key", "mic", "say"];
+let firstRunActive = false;
+let firstRunDismissed = false;
+let firstRunPollTimer = null;
+
+function firstRunStepFor(config, localHealth) {
+  if (!localHealth.hasGroqApiKey) return "key";
+  if (!config.didTestMicrophone) return "mic";
+  if (!config.didDictate) return "say";
+  return null;
+}
+
+function startFirstRun(config, localHealth) {
+  // Only ever decided once per window session. Reaching setup completion mid
+  // session finishes the flow; it must not restart it.
+  if (firstRunActive || firstRunDismissed) {
+    return;
+  }
+
+  const step = firstRunStepFor(config, localHealth);
+  if (!step) {
+    return;
+  }
+
+  firstRunActive = true;
+  renderKeycaps(config.hotkey || "Ctrl+Shift+Space");
+  showFirstRunStep(step);
+  showPage("firstrun");
+}
+
+function showFirstRunStep(step) {
+  for (const name of FIRST_RUN_STEPS) {
+    document.getElementById(`step-${name}`).hidden = name !== step;
+  }
+
+  const reached = FIRST_RUN_STEPS.indexOf(step);
+  for (const [index, item] of [...document.querySelectorAll("#stepRail li")].entries()) {
+    item.dataset.state = index < reached ? "done" : index === reached ? "current" : "todo";
+  }
+
+  if (step === "mic") {
+    mirrorMicrophoneOptions();
+  }
+
+  stopFirstRunPolling();
+  if (step === "say") {
+    startFirstRunPolling();
+  }
+}
+
+function startFirstRunPolling() {
+  firstRunPollTimer = setInterval(async () => {
+    let latest;
+    try {
+      latest = await window.settingsBridge.load();
+    } catch {
+      return; // A failed read is not worth surfacing; the next tick retries.
+    }
+    if (latest.didDictate) {
+      stopFirstRunPolling();
+      finishFirstRun("That worked. You are set up.");
+    }
+  }, 1500);
+}
+
+function stopFirstRunPolling() {
+  if (firstRunPollTimer) {
+    clearInterval(firstRunPollTimer);
+    firstRunPollTimer = null;
+  }
+}
+
+function finishFirstRun(message) {
+  stopFirstRunPolling();
+  firstRunActive = false;
+  firstRunDismissed = true;
+  showPage("home");
+  void refreshHome();
+  if (message) {
+    setStatus(message, "success");
+  }
+}
+
+/*
+ * Home was rendered once, at load, while setup was still incomplete. Arriving
+ * there from first run without this leaves a checklist that still says the user
+ * has never dictated.
+ */
+async function refreshHome() {
+  let latest;
+  try {
+    latest = await window.settingsBridge.load();
+  } catch {
+    return;
+  }
+
+  const localHealth = latest.health || {};
+  setupNotice.hidden = Boolean(localHealth.hasGroqApiKey);
+  renderDisclosure(latest);
+  renderSetupChecklist(latest, localHealth);
+  renderHealth(latest, localHealth);
+  renderNavState(localHealth);
+  await loadStats();
+}
+
+function renderKeycaps(hotkey) {
+  const target = document.getElementById("fr_keycaps");
+  target.replaceChildren(
+    ...hotkey.split("+").map((key) => {
+      const cap = document.createElement("span");
+      cap.textContent = key.trim();
+      return cap;
+    }),
+  );
+}
+
+document.getElementById("fr_getKey").addEventListener("click", () => {
+  void window.settingsBridge.openGroqConsole();
+});
+
+document.getElementById("fr_saveKey").addEventListener("click", async () => {
+  const note = document.getElementById("fr_keyNote");
+  const value = document.getElementById("fr_apiKey").value.trim();
+
+  if (!value) {
+    note.dataset.state = "error";
+    note.textContent = "Paste your key first.";
+    return;
+  }
+
+  // Drive the real field, then the real Save button. One save path, one set of
+  // rules about what a valid key is.
+  fields.groqApiKey.value = value;
+  fields.groqApiKey.dataset.masked = "false";
+  note.dataset.state = "";
+  note.textContent = "Saving...";
+
+  document.getElementById("save").click();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  let latest;
+  try {
+    latest = await window.settingsBridge.load();
+  } catch {
+    note.dataset.state = "error";
+    note.textContent = "Could not read settings back.";
+    return;
+  }
+
+  if (!latest.health?.hasGroqApiKey) {
+    note.dataset.state = "error";
+    note.textContent = "That key was not accepted.";
+    return;
+  }
+
+  note.dataset.state = "good";
+  note.textContent = "Saved.";
+  document.getElementById("fr_apiKey").value = "";
+  await populateMicrophones(latest.microphoneId || "");
+  mirrorMicrophoneOptions();
+  showFirstRunStep(latest.didTestMicrophone ? "say" : "mic");
+});
+
+/* The first-run picker shows the same devices as the Settings one. */
+function mirrorMicrophoneOptions() {
+  const source = fields.microphoneId;
+  const target = document.getElementById("fr_microphone");
+  target.replaceChildren(...[...source.options].map((option) => option.cloneNode(true)));
+  target.value = source.value;
+}
+
+document.getElementById("fr_microphone").addEventListener("change", (event) => {
+  fields.microphoneId.value = event.target.value;
+});
+
+document.getElementById("fr_testMic").addEventListener("click", async () => {
+  const note = document.getElementById("fr_micNote");
+  note.dataset.state = "";
+  note.textContent = "Listening...";
+
+  try {
+    await window.settingsBridge.testMicrophone();
+  } catch (error) {
+    note.dataset.state = "error";
+    note.textContent = error?.message || "The microphone could not be opened.";
+    return;
+  }
+
+  note.dataset.state = "good";
+  note.textContent = "Heard you.";
+  document.getElementById("save").click();
+});
+
+document.getElementById("fr_micNext").addEventListener("click", () => {
+  showFirstRunStep("say");
+});
+
+document.getElementById("fr_finish").addEventListener("click", () => {
+  finishFirstRun("");
+});
+
+document.getElementById("fr_skip").addEventListener("click", () => {
+  finishFirstRun("Setup skipped. The checklist on Home has the rest.");
+});

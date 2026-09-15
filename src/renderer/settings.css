@@ -284,12 +284,71 @@ input::placeholder {
   align-items: start;
 }
 
+/*
+ * Hand-drawn rather than accent-color. accent-color paints the whole box in the
+ * accent, and the accent is paper-white, so a checked box became the brightest
+ * object on the page — four of them on the Privacy tab drowned out the labels
+ * they belong to. A checked box now reads as "on" through its border and tick,
+ * which is enough, and leaves white to mean "primary action".
+ */
 .toggle input[type="checkbox"] {
   width: 18px;
   height: 18px;
   margin: 2px 0 0;
-  accent-color: var(--bf-accent);
+  flex: 0 0 auto;
+  display: grid;
+  place-content: center;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--bf-line-highlight);
+  border-radius: 5px;
+  background: var(--bf-bg-input);
   cursor: pointer;
+  transition:
+    border-color var(--bf-fast) var(--bf-ease),
+    background var(--bf-fast) var(--bf-ease);
+}
+
+.toggle input[type="checkbox"]:hover {
+  border-color: var(--bf-text-muted);
+}
+
+/*
+ * The tick is two borders on a rotated box, NOT an inline SVG data: URI.
+ * This page's Content-Security-Policy is `img-src 'self'`, so a data: image is
+ * blocked outright — the first version of this rule looked correct in the
+ * stylesheet and drew nothing at all in the app. Two borders need no image, no
+ * font glyph, and no CSP change.
+ */
+.toggle input[type="checkbox"]::after {
+  content: "";
+  display: block;
+  width: 4.5px;
+  height: 9px;
+  border: solid var(--bf-text);
+  border-width: 0 2px 2px 0;
+  opacity: 0;
+  transform: translateY(-1px) rotate(42deg);
+  transition: opacity var(--bf-fast) var(--bf-ease);
+}
+
+.toggle input[type="checkbox"]:checked {
+  border-color: var(--bf-data-strong);
+  background: var(--bf-bg-raised);
+}
+
+.toggle input[type="checkbox"]:checked::after {
+  opacity: 1;
+}
+
+.toggle input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--bf-accent);
+  outline-offset: 2px;
+}
+
+.toggle input[type="checkbox"]:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .toggle-copy {
@@ -507,10 +566,20 @@ details[open] summary::before {
 
 /* ---------- stat tiles ---------- */
 
+/*
+ * auto-fit alone is not enough: at this window width 180px resolves to four
+ * columns, so the Stats page's six tiles land as 4 + 2 with a two-tile hole.
+ * The count drives the track width instead, and renderTiles sets data-count.
+ */
 .tiles {
   display: grid;
   gap: var(--bf-space-3);
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(var(--bf-tile-min, 180px), 1fr));
+}
+
+.tiles[data-count="6"],
+.tiles[data-count="3"] {
+  --bf-tile-min: 230px;
 }
 
 .tile {
@@ -753,13 +822,28 @@ kbd {
   align-items: end;
 }
 
+/*
+ * Two rows, not three. The value used to sit in its own top row, so on a day
+ * with 320 words next to a day with 1,250 the small bar's number still floated
+ * at the ceiling and the labels read as a separate row above a chart. The value
+ * now lives inside the plot area with the bar and is pushed down with it.
+ */
 .chart-col {
   display: grid;
   height: 100%;
   gap: 6px;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  align-items: end;
+  grid-template-rows: minmax(0, 1fr) auto;
   justify-items: center;
+}
+
+.chart-plot {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
 }
 
 .chart-value {
@@ -771,8 +855,13 @@ kbd {
   width: 100%;
   max-width: 56px;
   border-radius: var(--bf-radius-sm) var(--bf-radius-sm) 2px 2px;
-  background: var(--bf-accent);
+  background: var(--bf-data-strong);
   transition: height var(--bf-base) var(--bf-ease);
+}
+
+/* A day with nothing keeps a visible stub, but must not look like a small day. */
+.chart-bar[data-empty="true"] {
+  background: var(--bf-data);
 }
 
 .chart-bar[data-empty="true"] {
@@ -821,7 +910,7 @@ kbd {
   display: block;
   height: 100%;
   border-radius: var(--bf-radius-pill);
-  background: var(--bf-accent);
+  background: var(--bf-data-strong);
 }
 
 .apps-count {
@@ -1293,4 +1382,330 @@ code {
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 0.92em;
   padding: 1px 5px;
+}
+
+/* ==========================================================================
+   Home: the standing privacy disclosure
+   ==========================================================================
+   Not a checklist item. History and window-title context are both on by
+   default, and putting that fact behind a green tick made a disclosure look
+   like an achievement the user had earned.
+   ========================================================================== */
+
+.disclosure {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-3);
+  border: 1px solid var(--bf-line);
+  border-radius: var(--bf-radius-md);
+  background: var(--bf-bg-sunken);
+  padding: var(--bf-space-3);
+}
+
+.disclosure-icon {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--bf-line-strong);
+  border-radius: var(--bf-radius-pill);
+  color: var(--bf-text-muted);
+  font-family: var(--bf-font-mono);
+  font-size: 11px;
+}
+
+.disclosure p {
+  margin: 0;
+  flex: 1 1 auto;
+  color: var(--bf-text-muted);
+  font-size: var(--bf-size-sm);
+  line-height: 1.5;
+}
+
+/* ==========================================================================
+   Collapsible card — native <details>, so keyboard and screen readers work
+   without a line of JavaScript. Only the open state is scripted.
+   ========================================================================== */
+
+.card-flush {
+  padding: 0;
+  gap: 0;
+}
+
+.collapsible {
+  display: block;
+}
+
+.collapsible-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-3);
+  padding: var(--bf-space-4);
+  cursor: pointer;
+  list-style: none;
+}
+
+/*
+ * Both of these are needed. `list-style: none` alone leaves Chromium rendering
+ * an empty ::marker box that still takes about 17px of inline space, which
+ * showed up as a stray dash to the left of the heading.
+ */
+.collapsible-head::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-head::marker {
+  content: "";
+}
+
+.collapsible-head > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.collapsible-head:hover h2 {
+  color: var(--bf-text);
+}
+
+.collapsible-head:focus-visible {
+  outline: 2px solid var(--bf-accent);
+  outline-offset: -2px;
+  border-radius: var(--bf-radius-lg);
+}
+
+.collapsible-chevron {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border: solid var(--bf-text-muted);
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform var(--bf-fast) var(--bf-ease);
+}
+
+.collapsible[open] .collapsible-chevron {
+  transform: translateY(2px) rotate(-135deg);
+}
+
+.collapsible .checklist {
+  padding: 0 var(--bf-space-4) var(--bf-space-4);
+}
+
+/* ==========================================================================
+   First run
+   ========================================================================== */
+
+.steprail {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.steprail li {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-2);
+  color: var(--bf-text-faint);
+  font-size: var(--bf-size-sm);
+}
+
+/* The connector between steps. A pseudo-element rather than a real node so the
+   list stays a plain list for assistive technology. */
+.steprail li:not(:last-child)::after {
+  content: "";
+  width: 34px;
+  height: 1px;
+  background: var(--bf-line-strong);
+  margin: 0 var(--bf-space-1);
+}
+
+.steprail-dot {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--bf-line-strong);
+  border-radius: var(--bf-radius-pill);
+  font-family: var(--bf-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.steprail li[data-state="done"] .steprail-dot {
+  border-color: var(--bf-live);
+  background: var(--bf-live);
+  color: var(--bf-glass-solid);
+}
+
+.steprail li[data-state="current"] {
+  color: var(--bf-text);
+}
+
+.steprail li[data-state="current"] .steprail-dot {
+  border-color: var(--bf-accent);
+  background: var(--bf-accent);
+  color: var(--bf-accent-text);
+}
+
+.step .field input,
+.step .field select {
+  min-height: var(--bf-hit);
+  width: 100%;
+  border: 1px solid var(--bf-line-strong);
+  border-radius: var(--bf-radius-sm);
+  background: var(--bf-bg-input);
+  color: var(--bf-text);
+  font-family: inherit;
+  font-size: var(--bf-size-sm);
+  outline: none;
+  padding: 0 10px;
+}
+
+.step .field input:focus,
+.step .field select:focus {
+  border-color: var(--bf-accent);
+}
+
+.step-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-2);
+  flex-wrap: wrap;
+}
+
+.step-actions .spacer {
+  flex: 1 1 auto;
+}
+
+.step-note {
+  color: var(--bf-text-muted);
+  font-size: var(--bf-size-sm);
+}
+
+.step-note[data-state="good"] { color: var(--bf-live); }
+.step-note[data-state="error"] { color: var(--bf-danger); }
+
+.step-waiting {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-2);
+  color: var(--bf-text-muted);
+  font-size: var(--bf-size-sm);
+}
+
+.step-waiting .dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: var(--bf-radius-pill);
+  background: var(--bf-live);
+  animation: bf-pulse 1.4s var(--bf-ease) infinite;
+}
+
+@keyframes bf-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step-waiting .dot { animation: none; opacity: 1; }
+}
+
+.keycaps {
+  display: flex;
+  align-items: center;
+  gap: var(--bf-space-2);
+}
+
+.keycaps span {
+  border: 1px solid var(--bf-line-highlight);
+  border-radius: var(--bf-radius-sm);
+  background: var(--bf-bg-hover);
+  color: var(--bf-text);
+  font-family: var(--bf-font-mono);
+  font-size: var(--bf-size-sm);
+  padding: 6px 10px;
+}
+
+#fr_target {
+  min-height: var(--bf-hit);
+  border: 1px solid var(--bf-line-strong);
+  border-radius: var(--bf-radius-sm);
+  background: var(--bf-bg-input);
+  color: var(--bf-text);
+  font-family: inherit;
+  font-size: var(--bf-size-md);
+  outline: none;
+  padding: 0 12px;
+}
+
+#fr_target:focus {
+  border-color: var(--bf-accent);
+}
+
+.linklike {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  color: var(--bf-text-faint);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--bf-size-sm);
+  padding: var(--bf-space-2) 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.linklike:hover {
+  color: var(--bf-text-muted);
+}
+
+/* ==========================================================================
+   BYOK note
+   ==========================================================================
+   "Bring your own key" is the reason the app asks for a Groq key at all, and
+   it is a genuine advantage: no BayanFlow server in the path, no subscription.
+   It is also jargon, so the acronym never appears without the plain-English
+   sentence underneath it.
+
+   Deliberately worded to avoid implying local-only processing. Audio still
+   goes to Groq; what BYOK buys is that it goes there on YOUR account, with no
+   middleman holding your key or your words.
+   ========================================================================== */
+
+.byok {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border: 1px solid var(--bf-line);
+  border-left: 2px solid var(--bf-data-strong);
+  border-radius: var(--bf-radius-sm);
+  background: var(--bf-bg-sunken);
+  padding: var(--bf-space-3);
+}
+
+.byok-tag {
+  color: var(--bf-text-muted);
+  font-family: var(--bf-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.byok p {
+  margin: 0;
+  color: var(--bf-text-muted);
+  font-size: var(--bf-size-sm);
+  line-height: 1.55;
+}
+
+.byok strong {
+  color: var(--bf-text);
+  font-weight: 600;
 }
