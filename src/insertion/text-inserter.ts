@@ -51,6 +51,22 @@ export function isUsableTarget(target: PasteTarget | null | undefined, ownTitles
   return !ownTitles.some((own) => title === own || title.startsWith(`${own} `));
 }
 
+/**
+ * Decides what to remember as "the window the user was last typing in".
+ *
+ * Only a usable window replaces the memory. An unusable capture — our own dock
+ * holding the foreground for an instant after a click, or a titleless shell
+ * window — must leave the previous answer standing, because that previous
+ * answer is the entire reason the memory exists.
+ */
+export function nextRememberedTarget(
+  captured: PasteTarget | null | undefined,
+  remembered: PasteTarget | null,
+  ownTitles: string[] = OWN_WINDOW_TITLES,
+): PasteTarget | null {
+  return isUsableTarget(captured, ownTitles) ? captured! : remembered;
+}
+
 type ClipboardLike = {
   readText(): string;
   writeText(text: string): void;
@@ -152,21 +168,30 @@ export class TextInserter {
     void logger.info("clipboard.copy.success", { ...context, textChars: text.length });
   }
 
-  async captureActiveTarget(context: OperationContext = {}): Promise<PasteTarget | null> {
+  /**
+   * `quiet` suppresses the per-capture log line. The foreground tracker reads
+   * the active window once a second; logging each read would bury every other
+   * event in the file within minutes.
+   */
+  async captureActiveTarget(context: OperationContext = {}, quiet = false): Promise<PasteTarget | null> {
     try {
       const activeWindow = await this.deps.windowProvider.getActiveWindow();
       const title = await activeWindow.getTitle();
       const handle = getWindowHandle(activeWindow);
       const bounds = activeWindow.getRegion ? normalizeWindowRegion(await activeWindow.getRegion()) : undefined;
-      void logger.info("paste.target.captured", {
-        ...context,
-        titleChars: title.length,
-        hasHandle: handle !== null,
-        hasBounds: Boolean(bounds),
-      });
+      if (!quiet) {
+        void logger.info("paste.target.captured", {
+          ...context,
+          titleChars: title.length,
+          hasHandle: handle !== null,
+          hasBounds: Boolean(bounds),
+        });
+      }
       return bounds ? { title, handle, bounds } : { title, handle };
     } catch (error) {
-      void logger.warn("paste.target.capture_failed", { ...context, error: normalizeError("paste", error) });
+      if (!quiet) {
+        void logger.warn("paste.target.capture_failed", { ...context, error: normalizeError("paste", error) });
+      }
       return null;
     }
   }

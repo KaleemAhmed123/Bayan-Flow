@@ -24,7 +24,12 @@ import { HistoryStore } from "./history/history-store.js";
 import { HotkeyWatcher } from "./hotkey/hotkey-listener.js";
 import { HotkeySuppressor, type SuppressionResult } from "./hotkey/hotkey-suppressor.js";
 import { classifyPress } from "./hotkey/hotkey-parser.js";
-import { TextInserter, isUsableTarget, replaceLastOccurrence } from "./insertion/text-inserter.js";
+import {
+  TextInserter,
+  isUsableTarget,
+  nextRememberedTarget,
+  replaceLastOccurrence,
+} from "./insertion/text-inserter.js";
 import { normalizeError, setOnlineChecker, type ErrorCategory, type NormalizedError } from "./observability/errors.js";
 import { isOnline, startNetworkMonitor } from "./observability/network-monitor.js";
 import { OverlayDock } from "./overlay/overlay-dock.js";
@@ -328,6 +333,7 @@ app.whenReady()
     restartHotkeyListeners();
     createTray(settingsWindow);
     refreshDockIdle();
+    startForegroundTracker();
     await showLaunchReadyNotice(settingsWindow);
     if (pendingSecondInstanceNotice) {
       pendingSecondInstanceNotice = false;
@@ -357,6 +363,7 @@ app.on("will-quit", () => {
   hotkeySuppressor.release();
   clearRecordingLimitTimer();
   clearDockSnooze();
+  stopForegroundTracker();
   stopUpdater();
   // Best effort: the audio must not outlive the session that produced it.
   void discardFailedAudio();
@@ -427,6 +434,70 @@ async function captureTarget(requestId: string): Promise<PasteTarget | null> {
     reusedPrevious: Boolean(lastGoodTarget),
   });
   return lastGoodTarget;
+}
+
+/**
+ * Keeps `lastGoodTarget` fresh so every entry path has a real window to fall
+ * back on.
+ *
+ * The rewrite menu is usually opened by clicking the dock, and by the time that
+ * click reaches us the foreground window is often the dock itself — titleless,
+ * and rightly refused by `isUsableTarget`. Capturing only at command time left
+ * nothing to fall back to, so the app told the user to "click into the text box
+ * first" when they had already done exactly that. Polling records the answer
+ * while it is still true.
+ *
+ * ponytail: a 1s poll, not a Win32 foreground hook. Swap it for SetWinEventHook
+ * if these wake-ups ever show up in a battery trace.
+ */
+const FOREGROUND_POLL_MS = 1_000;
+let foregroundPollTimer: NodeJS.Timeout | null = null;
+
+function startForegroundTracker(): void {
+  if (foregroundPollTimer) {
+    return;
+  }
+
+  foregroundPollTimer = setInterval(() => {
+    // Mid-dictation the foreground is already settled and the native call is
+    // pure overhead. Mid-rewrite we move focus ourselves, and recording our own
+    // handiwork would overwrite the very answer we are about to need.
+    if (isRecording || isProcessing || rewriteInFlight) {
+      return;
+    }
+
+    void inserter
+      .captureActiveTarget({ requestId: "foreground-poll" }, true)
+      .then((captured) => {
+        const next = nextRememberedTarget(captured, lastGoodTarget);
+        if (next === lastGoodTarget) {
+          return;
+        }
+
+        lastGoodTarget = next;
+        // Logged only when the answer changes. At one capture a second, logging
+        // every poll would bury every other event in the file within minutes.
+        void logger.info("target.foreground.remembered", {
+          titleChars: next?.title.length ?? 0,
+          hasBounds: Boolean(next?.bounds),
+        });
+      })
+      .catch(() => {
+        /* A failed read just means the previous answer still stands. */
+      });
+  }, FOREGROUND_POLL_MS);
+
+  // Electron keeps the process alive; this timer must never be the reason it does.
+  foregroundPollTimer.unref?.();
+}
+
+function stopForegroundTracker(): void {
+  if (!foregroundPollTimer) {
+    return;
+  }
+
+  clearInterval(foregroundPollTimer);
+  foregroundPollTimer = null;
 }
 
 /**
@@ -1409,7 +1480,7 @@ async function openRewriteMenu(): Promise<void> {
   // window becomes the dock itself.
   rewriteTarget = await captureTarget(createPrefixedId("rewrite-target"));
   if (!rewriteTarget) {
-    showFailure("generic", "Click into the text box first, then press the rewrite hotkey.");
+    showFailure("generic", "Click into the text you want to change, then open rewrite.");
     return;
   }
 
@@ -1438,7 +1509,7 @@ async function runRewrite(actionId: string, customInstruction?: string): Promise
 
   const target = rewriteTarget;
   if (!target) {
-    showFailure("generic", "Could not find the input. Click into it and press the rewrite hotkey again.");
+    showFailure("generic", "Lost track of that input. Click into it and open rewrite again.");
     return;
   }
 
@@ -1455,7 +1526,16 @@ async function runRewrite(actionId: string, customInstruction?: string): Promise
   try {
     const { selection, whole } = await inserter.captureSelectionAndWhole(target, context);
     if (!whole || !whole.trim()) {
-      showFailure("generic", "No text found in that input. Click into it and try again.");
+      // Reading nothing back cannot tell an empty box from a caret that is not
+      // in one: both copy nothing. The message names both, and Try again
+      // reopens the menu against a freshly captured window rather than making
+      // the user find the hotkey a second time.
+      void logger.warn("rewrite.no_text", { ...context, titleChars: target.title.length });
+      showFailure(
+        "rewrite_no_text",
+        "That input looks empty, or your cursor is not inside it. Click into your text, then try again.",
+        () => openRewriteMenu(),
+      );
       return;
     }
 
