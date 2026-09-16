@@ -1235,3 +1235,114 @@ npm audit --omit=dev   -> 0 vulnerabilities (electron-updater adds none)
 invisible to the unit suite: the named-import form is banned, `electron-updater` must stay a runtime
 dependency and stay external to the bundle, the artifact name must match the manifest, signing flags
 must agree with each other, and publishing must stay off the `dist` script.
+
+### 2026-09-16 — v0.2.1 published, and the rewrite target-tracking bug
+
+#### v0.2.1 is released
+
+The blocker logged on 2026-09-12 — "there is no published release carrying `latest.yml`" — is closed.
+
+`npm run release` was never the path taken. The 0.2.1 artifacts already existed in `release-verify/`
+from a verified build, so they were uploaded directly rather than rebuilt:
+
+```txt
+gh release create v0.2.1 --draft --target 901d6b1 \
+  release-verify/BayanFlow-Setup-0.2.1.exe \
+  release-verify/BayanFlow-Setup-0.2.1.exe.blockmap \
+  release-verify/latest.yml
+gh release edit v0.2.1 --draft=false --latest
+```
+
+Verified unauthenticated: installer `HTTP 200`, `latest.yml` `HTTP 200` (346 bytes). Tag `v0.2.1` sits
+on `901d6b1`, the `chore(release): 0.2.1` commit, **not** on `HEAD` — `342b5e6` was unpushed and
+GitHub rejected it with `422 Release.target_commitish is invalid`. That commit only changes a
+`.vscode` watcher setting, so the tag is arguably more correct where it landed.
+
+**A PowerShell trap worth recording.** `npx electron-builder -c.directories.output=release-verify`
+fails under PowerShell 5.1 with `ENOENT: ... open '.directories.output=release-verify'`. PowerShell
+splits the argument at the dot before the process ever sees it:
+
+```txt
+PowerShell -> ["--publish","always","-c",".directories.output=release-verify"]
+Bash       -> ["--publish","always","-c.directories.output=release-verify"]
+```
+
+Quote it — `"-c.directories.output=release-verify"` — and it survives. Verified both ways.
+
+#### Two bugs in the rewrite flow, found from the log
+
+The user hit `No text found in that input. Click into it and try again.` while rewriting into a
+VS Code panel. The log showed **two distinct failures**, not one.
+
+**Bug A — the target was captured too late on the click path.** Confirmed.
+
+```txt
+dock.command            {command: "menu"}
+paste.target.captured   {titleChars: 0, hasHandle: true, hasBounds: false}
+target.capture.rejected {titleChars: 0, reusedPrevious: false}
+```
+
+All three inside one millisecond. Clicking the dock makes the dock the foreground window; the
+capture in `openRewriteMenu` therefore read a titleless window, `isUsableTarget` rightly refused it,
+and the fallback to `lastGoodTarget` found `null` — because `lastGoodTarget` was only ever written
+when a capture *succeeded*, and none had. Result: "click into the text box first" told to a user who
+had already done exactly that.
+
+The comment "capture the target BEFORE the menu takes focus" is true of the **hotkey** path only. A
+mouse click moves the foreground before the app is told about it, so there is no "before" to use.
+
+**Bug B — an unreadable input.** Not resolved; two candidates the log cannot separate.
+
+```txt
+paste.target.captured  {titleChars: 31, hasHandle: true, hasBounds: true}
+paste.target.refocused {hasHandle: true}
+clipboard.capture.pair {selectionChars: 0, wholeChars: 0}
+```
+
+Either the input was genuinely empty (the screenshot shows placeholder text, which only renders on an
+empty field), or `targetWindow.focus()` restored the *window* without returning the caret to the
+webview input. Both produce identical evidence through a clipboard read. **Deliberately not guessed
+at** — the fix below is correct under both.
+
+#### What changed
+
+- **`nextRememberedTarget()`** in `src/insertion/text-inserter.ts` — one pure function deciding what
+  to remember. An unusable capture leaves the previous answer standing.
+- **A 1s foreground poll** in `src/main.ts` keeps `lastGoodTarget` populated, so every entry path
+  (click, hotkey, tray, Try again) has a real window behind it. Skipped while recording, processing,
+  or rewriting. Logs only when the remembered window changes.
+- **`captureActiveTarget(context, quiet)`** — the poll would otherwise write a log line every second.
+- **`rewrite_no_text`** is a new `DockFailure` mapping to a **Try again** button that reopens the menu
+  against a freshly captured window. It was `generic`, which offers Dismiss only.
+- **Three error messages rewritten** so "no window known", "target went stale" and "input unreadable"
+  no longer say the same misleading sentence.
+
+Deliberately **not** changed: `viewNeedsFocus` still gives the menu focus. Making the menu
+non-focusable would fix Bug B *if* B2 is the cause, but it also breaks dismiss-on-blur, and the cause
+is unproven. Not fixing an unproven root cause.
+
+#### Verification
+
+```txt
+npm run build       -> exit 0 (591 KB)
+npm test            -> tests 320 | pass 320 | fail 0   (314 before)
+npm run local:smoke -> PASS, 3 non-blank dock frames
+```
+
+The six new tests were mutation-checked: replacing `nextRememberedTarget`'s body with the original
+naive `captured ?? remembered` makes 2 of them fail, and rebuilding restores green. A test that
+cannot fail is not a test.
+
+#### Still open
+
+- **Bug B needs one manual experiment**: type text into the input that failed, then rewrite. Works →
+  it was an empty box and the new message already covers it. Still empty → `focusTargetWindow` needs
+  to restore the caret, not just the window.
+- **`LICENSE` contradicts the public release.** It grants no right to use the software without prior
+  written permission, and restricts test builds to named individuals — but the repo and the release
+  are both public. Either relax it or take the release private. Unresolved, and the only same-day
+  launch blocker left.
+- **Unsigned installer.** SmartScreen blocks it on first run for every user, and because the app is
+  unsigned, reputation attaches to the file hash — so every future release starts from zero again.
+  electron-builder 26.15.3 supports Azure Trusted Signing natively (~$10/month), which is the cheapest
+  exit.
