@@ -48,6 +48,7 @@ export type DockFailure =
   | "offline"
   | "polish"
   | "paste_blocked"
+  | "rewrite_no_text"
   | "generic";
 
 export type DockMenuAction = {
@@ -147,6 +148,10 @@ export function recoveryForFailure(failure: DockFailure): DockRecovery | null {
       return { action: "redo", label: "Redo" };
     case "paste_blocked":
       return { action: "copy", label: "Copy again" };
+    case "rewrite_no_text":
+      // The user's own next action fixes this — click into the text, then press
+      // the button. A dismiss-only error would make them reopen the menu by hand.
+      return { action: "retry", label: "Try again" };
     default:
       return { action: "dismiss", label: "Dismiss" };
   }
