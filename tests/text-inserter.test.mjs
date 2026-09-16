@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Key } from "@nut-tree-fork/nut-js";
-import { TextInserter, isUsableTarget, replaceLastOccurrence } from "../dist/insertion/text-inserter.js";
+import {
+  TextInserter,
+  isUsableTarget,
+  nextRememberedTarget,
+  replaceLastOccurrence,
+} from "../dist/insertion/text-inserter.js";
 
 function createInserter({ title = "Target", handle = 101, failPaste = false, mutateClipboardAfterPaste = false } = {}) {
   const writes = [];
@@ -321,4 +326,48 @@ test("no guard installed means no modifier wait is added", async () => {
   // The paste path already spends ~250ms in its own settle sleeps, so the only
   // meaningful check is that none of the 600ms modifier budget was consumed.
   assert.ok(elapsed < 600, `unguarded paste should not wait on modifiers, took ${elapsed}ms`);
+});
+
+/* ---------------------------------------------------------------- *
+ * Remembering the window the user was last typing in.
+ *
+ * The bug these cover: opening the rewrite menu by CLICKING the dock made the
+ * dock the foreground window, so the capture returned a titleless window, the
+ * guard refused it, and there was no remembered target behind it. The user was
+ * told to "click into the text box first" when they already had.
+ * ---------------------------------------------------------------- */
+
+test("a real window becomes the remembered target", () => {
+  const real = { title: "Inbox - Brave", handle: 7 };
+
+  assert.deepEqual(nextRememberedTarget(real, null), real);
+});
+
+test("our own dock never replaces the remembered target", () => {
+  const real = { title: "Inbox - Brave", handle: 7 };
+
+  // This is the exact shape the log captured: titleless, and refused.
+  assert.equal(nextRememberedTarget({ title: "", handle: 99 }, real), real);
+  assert.equal(nextRememberedTarget({ title: "BayanFlow", handle: 99 }, real), real);
+  assert.equal(nextRememberedTarget({ title: "BayanFlow Settings", handle: 99 }, real), real);
+});
+
+test("a failed read leaves the remembered target standing", () => {
+  const real = { title: "Inbox - Brave", handle: 7 };
+
+  assert.equal(nextRememberedTarget(null, real), real);
+  assert.equal(nextRememberedTarget(undefined, real), real);
+});
+
+test("with nothing usable ever seen the remembered target stays null", () => {
+  // Reproduces the logged `reusedPrevious: false`: the fallback only helps if
+  // something populated it first, which is what the foreground poll now does.
+  assert.equal(nextRememberedTarget({ title: "", handle: 1 }, null), null);
+});
+
+test("a newer real window replaces an older one", () => {
+  const older = { title: "Inbox - Brave", handle: 7 };
+  const newer = { title: "main.ts - Visual Studio Code", handle: 8 };
+
+  assert.deepEqual(nextRememberedTarget(newer, older), newer);
 });

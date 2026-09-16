@@ -15,6 +15,12 @@ import { classifyPress } from "../dist/hotkey/hotkey-parser.js";
 const primary = { x: 0, y: 0, width: 1920, height: 1040 };
 const secondaryLeft = { x: -1920, y: 0, width: 1920, height: 1040 };
 
+test("an unreadable input offers Try again, not just Dismiss", () => {
+  // Dismiss-only made the user reopen the rewrite menu by hand after the one
+  // error they are most likely to hit.
+  assert.deepEqual(recoveryForFailure("rewrite_no_text"), { action: "retry", label: "Try again" });
+});
+
 test("dock sits bottom centre of the given work area", () => {
   const bounds = dockBounds({ width: DOCK_WIDTH, height: 60 }, primary);
 
